@@ -40,8 +40,12 @@
     "THIRD-PARTY.md"
   ],
   "scripts": {
-    "build": "node build-client.mjs",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "prepublishOnly": "npm test"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org",
+    "access": "public"
   },
   "dsh": {
     "bundle": {

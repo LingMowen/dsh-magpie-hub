@@ -2,6 +2,27 @@
   "name": "dsh-magpie-hub",
   "version": "0.2.0",
   "description": "DeepSeek Harness 插件：在 DSH 进程内直接运行 magpie 供应商插件（登录 / 模型目录 / 请求转发 / 额度 / 签到 / 商店），桌面与手机共用一套面板",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "deepseek",
+    "cordis",
+    "magpie",
+    "llm",
+    "provider",
+    "plugin",
+    "llm-router"
+  ],
+  "author": "LingMowen",
+  "license": "AGPL-3.0-only",
+  "homepage": "https://github.com/LingMowen/dsh-magpie-hub#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LingMowen/dsh-magpie-hub.git"
+  },
+  "bugs": {
+    "url": "https://github.com/LingMowen/dsh-magpie-hub/issues"
+  },
   "type": "module",
   "main": "src/index.js",
   "exports": {
@@ -80,6 +101,5 @@
   },
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
-  },
-  "license": "AGPL-3.0-only"
+  }
 }

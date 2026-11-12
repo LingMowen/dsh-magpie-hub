@@ -1,0 +1,4 @@
+# dsh-magpie-hub 配置包补丁：在空配置根上追加插件行。
+- insert:
+    - id: magpie-hub
+      name: 'dsh-magpie-hub'

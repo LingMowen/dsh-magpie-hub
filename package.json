@@ -1,0 +1,83 @@
+{
+  "name": "dsh-magpie-hub",
+  "version": "0.2.0",
+  "description": "DeepSeek Harness 插件：在 DSH 进程内直接运行 magpie 供应商插件（登录 / 模型目录 / 请求转发 / 额度 / 签到 / 商店），桌面与手机共用一套面板",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./client/magpie-hub.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "client",
+    "ui",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node build-client.mjs",
+    "test": "node --test test/*.test.js"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-connection"
+      ]
+    }
+  },
+  "dshGo": {
+    "v": 1,
+    "title": {
+      "zh": "Magpie",
+      "en": "Magpie"
+    },
+    "icon": "plugin",
+    "contributes": {
+      "panels": [
+        {
+          "id": "magpie",
+          "title": {
+            "zh": "Magpie",
+            "en": "Magpie"
+          },
+          "icon": "plugin",
+          "placement": [
+            "session.tab",
+            "features",
+            "chat.panel"
+          ]
+        }
+      ],
+      "composer.strip": [
+        {
+          "id": "magpie-strip",
+          "icon": "coin",
+          "text": {
+            "zh": "额度",
+            "en": "Quota"
+          },
+          "panel": "magpie"
+        }
+      ],
+      "turn.note": [
+        {
+          "id": "magpie-note"
+        }
+      ]
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-llm": ">=0.2.1-rc.5 <0.3.0"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "license": "MIT"
+}

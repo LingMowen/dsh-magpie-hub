@@ -1,0 +1,20 @@
+# 依赖与构建产物
+node_modules/
+*.tgz
+
+# 本机状态与凭据（绝不上传：账号、额度、token 都在这些文件里）
+hub-settings.json
+plugin-auth.json
+plugin-providers.json
+turns.json
+*.log
+
+# 临时验证脚本与抓取物
+tmp-*
+tmp-tools/
+
+# 编辑器与系统
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

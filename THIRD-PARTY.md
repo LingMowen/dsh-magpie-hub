@@ -79,10 +79,9 @@
 
 ---
 
-## 5. 商标与命名
+## 5. 名字
 
-- **magpie**、**DeepSeek**、**DeepSeek Harness**、**WPS 灵犀**、**Marvis**、**CodeArts**、**GitHub Copilot** 等名称是各自所有者的商标，本仓库使用它们仅为**描述兼容性与数据来源**，不表示任何关联、赞助或背书。
-- 本仓库名为 `dsh-magpie-hub`：`dsh-` 前缀表示它是 DSH 的插件，`magpie-hub` 表示它承载 magpie 的插件生态。它不是 magpie 官方项目的一部分。
+本仓库名为 `dsh-magpie-hub`：`dsh-` 前缀表示它是 DSH 的插件，`magpie-hub` 表示它承载 magpie 的插件生态。它不是 magpie 官方项目的一部分，与上游作者没有隶属关系。
 
 ---
 

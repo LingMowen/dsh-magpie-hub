@@ -144,7 +144,7 @@ ctx.llm.registerAdapter(providers, adapter)   // 一次把全部 provider 交给
 
 - 每个 provider 各自成为模型选择器里的一条路由；
 - 名字来自插件的 `config().name`（如「WPS 灵犀 Lingxi」）；
-- **整批注册被别的插件占用时会退化成逐个注册**：`registerAdapter` 是整批语义，列表里只要有一个 provider 已被占用（例如 `dsh-providers-hub` 的 `raccoon`），整批都会失败，而错误又被当成正常竞态吞掉。本插件捕获这种错误后逐个注册，被占用的跳过、其余接上。
+- **整批注册被别的插件占用时会退化成逐个注册**：`registerAdapter` 是整批语义，列表里只要有一个 provider 已被别的插件占用，整批都会失败，而错误又被当成正常竞态吞掉。本插件捕获这种错误后逐个注册，被占用的跳过、其余接上。
 - **适配器自己解析平台**：DSH 传给 `stream()` 的模型 id 是裸名（`deepseek-v4.1-flash`，不带平台前缀），所以适配器要反查「哪个平台声明了这个模型」，否则会拿到空 loader、请求退化成不带凭据的直连。
 
 ---
@@ -167,7 +167,7 @@ node test/real-data.mjs
 ## 已知边界
 
 - **git spec 不会自动安装**（`https://github.com/xxx/yyy` 这类写进 `plugins.json` 的）：magpie 用 bun 装，本插件不代劳，面板会提示「没有找到插件目录」。
-- **面板里的 `hub-*` / `jet-hub-*` provider** 来自 `magpie-providers-hub` 插件本身（magpie 版的 jet Hub），不是本仓库重复实现。
+- **面板里的 `hub-*` 这类 provider** 来自某个供应商插件自己声明的集合，不是本仓库重复实现。
 - **签到**依赖插件声明的 `auth.checkin`；没声明就没有签到入口。
 - **Windows DPAPI 凭据不能跨系统**：桌面 magpie 用 Windows DPAPI 加密部分凭据，拷到安卓/Linux 解不开。这种情况面板会给出「请在手机上重新登录一次」，而不是抛原始报错。
 - **手机端回合号是近似值**：App 不向插件暴露「第几回合」，本插件按会话内的调用次数累加，多对话并行时会串号。
@@ -181,6 +181,5 @@ node test/real-data.mjs
 - **magpie**（[yetone/magpie](https://github.com/yetone/magpie)，MIT）—— 插件协议、数据格式、`ui/` 下的 Web UI 均来自上游；
 - **DeepSeek Harness**（`@deepseek-ai/*`）—— 宿主运行时与扩展点；
 - **dsh-Go** —— 手机端原生插件协议（`panels` / `composer.strip` / `turn.note`）；
-- **magpie 供应商插件**（wps-lingxi、marvis、opencode-*-auth 等）—— 各自独立项目，**不在本仓库内**，由用户自行安装。
 
 本仓库与上述项目的作者没有隶属关系，也未经他们背书。

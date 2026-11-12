@@ -66,32 +66,7 @@
 
 ---
 
-## 4. magpie 供应商插件 —— 被适配的外部生态
-
-本仓库**不含**这些插件的代码。它们由用户自行通过 `npm` / GitHub 安装，本仓库只负责：读取它们的 `package.json`、调用它们导出的钩子、把结果渲染成面板。
-
-| 插件 | 提供 | 来源 |
-|---|---|---|
-| `wps-lingxi` | WPS 灵犀 Lingxi（11 个模型） | 独立项目 |
-| `magpie-marvis` | 腾讯 Marvis TENCENT（8 个模型） | [MYCF711/magpie-marvis](https://github.com/MYCF711/magpie-marvis) |
-| `@magpie-community/opencode-sensenova-auth` | SenseNova Token Plan | magpie 社区 |
-| `@magpie-community/opencode-raccoon-auth` | 商汤小浣熊 | magpie 社区 |
-| `@magpie-community/opencode-codearts-auth` | CodeArts | magpie 社区 |
-| `@magpie-community/opencode-zen-free-auth` | OpenCode Zen Free | magpie 社区 |
-| `@magpie-community/opencode-catpaw-auth` | 妙手 CatPaw | magpie 社区 |
-| `@magpie-community/opencode-astudio-auth` | AStudio | magpie 社区 |
-| `@magpie-community/opencode-copilot-auth` | GitHub Copilot | magpie 社区 |
-| `magpie-providers-hub` | 一批 `hub-*` 供应商（Accio / AutoClaw / LobsterAI / Loomy / MagiCrew 等） | magpie 生态 |
-| `magpie-jet-hub` | Jet Hub（`jet-hub-*` 供应商） | [Betsy20/magpie-Jet-Hub](https://github.com/Betsy20/magpie-Jet-Hub) |
-| `magpie-intelligence-check` | 模型智能度标注 | [mu-zi-lee/magpie-intelligence-check](https://github.com/mu-zi-lee/magpie-intelligence-check) |
-
-这些插件各自有自己的许可与使用条款，**它们对上游 API 的调用是否合规由使用者与插件作者负责**，与本仓库无关。
-
-其中 `wps-lingxi` 声明了对 `@ai-sdk/openai-compatible`（`NPM = "@ai-sdk/openai-compatible"`）的运行期加载——那是**插件**的依赖，不是本仓库的；本仓库不打包、不安装它，只在转发请求时按插件返回的 `sdk` 字段决定协议形状。
-
----
-
-## 5. 运行时与工具链
+## 4. 运行时与工具链
 
 | 组件 | 用途 | 是否打包 |
 |---|---|---|
@@ -104,14 +79,14 @@
 
 ---
 
-## 6. 商标与命名
+## 5. 商标与命名
 
 - **magpie**、**DeepSeek**、**DeepSeek Harness**、**WPS 灵犀**、**Marvis**、**CodeArts**、**GitHub Copilot** 等名称是各自所有者的商标，本仓库使用它们仅为**描述兼容性与数据来源**，不表示任何关联、赞助或背书。
 - 本仓库名为 `dsh-magpie-hub`：`dsh-` 前缀表示它是 DSH 的插件，`magpie-hub` 表示它承载 magpie 的插件生态。它不是 magpie 官方项目的一部分。
 
 ---
 
-## 7. 本文档的维护
+## 6. 本文档的维护
 
 新增对任何第三方代码、协议或数据格式的依赖时，**必须在本文档补充一节**，写清：项目名与链接、许可、依赖面（含代码 / 只读规范 / 只读写数据）、是否打包。
 

@@ -36,6 +36,11 @@ magpie 的价值在**插件生态**——一批国内外 AI 平台各自提供�
 ```sh
 # 在 profile 目录里安装（desktop / web 各自一份）
 cd ~/.dsh/profiles/web
+
+# 从 npm 安装
+npm i dsh-magpie-hub
+
+# 或者用本地打包的 tgz
 npm i /path/to/dsh-magpie-hub-0.2.0.tgz
 ```
 

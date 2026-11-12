@@ -9,7 +9,7 @@
 | 版本 | 0.2.0 |
 | 运行环境 | Node `^22.19.0 \|\| >=24.0.0` |
 | 形态 | 纯 ESM，无可编译步骤 |
-| 许可 | Apache-2.0 |
+| 许可 | AGPL-3.0-only |
 
 ---
 
@@ -176,7 +176,7 @@ node test/real-data.mjs
 
 ## 授权与来源
 
-本仓库使用 **Apache License 2.0** 许可（全文见 [LICENSE](LICENSE)）。它**建立在别人的工作之上**，完整清单见 [THIRD-PARTY.md](THIRD-PARTY.md)：
+本仓库使用 **GNU Affero General Public License v3.0**（AGPL-3.0，全文见 [LICENSE](LICENSE)）。简单说：你可以自由使用、修改、分发，但**分发或作为网络服务提供时必须同样以 AGPL-3.0 开源**。它**建立在别人的工作之上**，完整清单见 [THIRD-PARTY.md](THIRD-PARTY.md)：
 
 - **magpie**（[yetone/magpie](https://github.com/yetone/magpie)，MIT）—— 插件协议、数据格式、`ui/` 下的 Web UI 均来自上游；
 - **DeepSeek Harness**（`@deepseek-ai/*`）—— 宿主运行时与扩展点；

@@ -14,7 +14,9 @@
     "client",
     "ui",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "THIRD-PARTY.md"
   ],
   "scripts": {
     "build": "node build-client.mjs",

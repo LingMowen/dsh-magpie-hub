@@ -67,6 +67,20 @@ export class PluginStore {
         }
         return [];
     }
+    /**
+     * 写回 `plugins.json`。
+     *
+     * ⚠ **必须是 `{ plugins: [...] }`，不能是裸数组**。`list()` 两种形状都读，
+     * 但 magpie 自己（`internal/plugin/store.go`）只认外层对象；写成数组后
+     * magpie 打开面板会当成「没有装任何插件」，手机端也一样。
+     *
+     * 这是实测踩到的：`add` / `remove` / `setEnabled` / `setOptions` 以前各自
+     * `writeJson(paths.plugins, list)`，只经过一次写操作文件就被写坏。
+     */
+    async writePlugins(list) {
+        await writeJson(this.paths.plugins, { plugins: list });
+        return list;
+    }
     async add(spec, options) {
         const list = await this.list();
         const at = list.findIndex((x) => x.spec === spec);
@@ -75,21 +89,18 @@ export class PluginStore {
             list.push(entry);
         else
             list[at] = { ...list[at], ...entry };
-        await writeJson(this.paths.plugins, list);
-        return list;
+        return this.writePlugins(list);
     }
     async remove(spec) {
         const list = (await this.list()).filter((x) => x.spec !== spec);
-        await writeJson(this.paths.plugins, list);
-        return list;
+        return this.writePlugins(list);
     }
     async setEnabled(spec, enabled) {
         const list = await this.list();
         const at = list.findIndex((x) => x.spec === spec);
         if (at >= 0)
             list[at] = { ...list[at], enabled };
-        await writeJson(this.paths.plugins, list);
-        return list;
+        return this.writePlugins(list);
     }
     /**
      * 改一个插件的运行选项（`runtime.js` 把它当第二参传给插件工厂）。
@@ -108,8 +119,7 @@ export class PluginStore {
                 next.options = options;
             list[at] = next;
         }
-        await writeJson(this.paths.plugins, list);
-        return list;
+        return this.writePlugins(list);
     }
 }
 /**

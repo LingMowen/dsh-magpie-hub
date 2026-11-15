@@ -429,8 +429,165 @@ export function makeUiHandlers(deps) {
             }
             return { plugins: out };
         },
-        /** 市场清单（本插件没有独立清单，给空）。 */
-        'plugins/listings': async () => ({ listings: [] }),
+        /**
+         * 市场清单。
+         *
+         * ⚠ 这里以前回的是空数组，于是桌面 UI 的商店一张卡片都没有——
+         * 「装不了插件」的第一层原因就是「没得装」。现在给真实清单，
+         * 字段按 `ui/plugins.js` 的 `ghListing` 形状（`package`/`name`/
+         * `icon`/`summary`/`providers`/`kind`）挑，`icon` 超过 100 KB 的
+         * data URI 直接丢掉（一个图标几 MB，列表会被它撑死）。
+         */
+        'plugins/listings': async () => {
+            const listings = await deps.market.listings().catch(() => []);
+            return {
+                listings: listings.map((l) => ({
+                    package: l.package,
+                    name: l.name,
+                    ...(typeof l.icon === 'string' && l.icon.length <= 100_000 ? { icon: l.icon } : {}),
+                    ...(Array.isArray(l.providers) && l.providers.length > 0 ? { providers: l.providers } : {}),
+                    ...(l.community === undefined ? {} : { community: l.community }),
+                    ...(l.kind === undefined ? {} : { kind: l.kind }),
+                    ...(l.summary === undefined ? {} : { summary: l.summary }),
+                })),
+            };
+        },
+        /**
+         * 装一个插件（商店卡片的 Install / 「+ 添加」手输）。
+         *
+         * 与手机面板同一条路径（`installOne`）：下载 → 解包 → 写 `plugins.json`
+         * → 重扫。⚠ 慢（整仓 tarball 十几 MB），调用方要给 loading 态。
+         */
+        'plugins/add': async (_req, body) => {
+            const spec = typeof body?.spec === 'string' ? body.spec.trim() : '';
+            if (spec === '')
+                throw new Error('缺少 spec');
+            const out = await deps.installOne(spec);
+            if (out.ok !== true)
+                throw new Error(out.error ?? '安装失败');
+            return { ok: true, name: out.name };
+        },
+        /** 升级到市场最新（`force` = 重装，否则已存在会被幂等短路）。 */
+        'plugins/upgrade': async (_req, body) => {
+            const spec = typeof body?.spec === 'string' ? body.spec.trim() : '';
+            if (spec === '')
+                throw new Error('缺少 spec');
+            const out = await deps.installOne(spec, undefined, true);
+            if (out.ok !== true)
+                throw new Error(out.error ?? '升级失败');
+            return { ok: true, name: out.name };
+        },
+        /** 启停一个插件（写 `plugins.json` 的 `enabled`，随后重扫才生效）。 */
+        'plugins/off': async (_req, body) => {
+            const spec = typeof body?.spec === 'string' ? body.spec.trim() : '';
+            if (spec === '')
+                throw new Error('缺少 spec');
+            // 页面的 `off` 是「关掉」；`enabled` 是它的反面
+            await deps.plugins.setEnabled(spec, body?.off !== true);
+            await deps.reload?.();
+            return { ok: true, off: body?.off === true };
+        },
+        /** 保存运行选项（`null` = 清空，与桌面端的 Clear 同义）。 */
+        'plugins/options': async (_req, body) => {
+            const spec = typeof body?.spec === 'string' ? body.spec.trim() : '';
+            if (spec === '')
+                throw new Error('缺少 spec');
+            const options = body?.options ?? null;
+            if (options !== null && (typeof options !== 'object' || Array.isArray(options)))
+                throw new Error('选项必须是一个 JSON 对象');
+            await deps.plugins.setOptions(spec, options);
+            await deps.reload?.();
+            return { ok: true };
+        },
+        /** 卸载（删目录 + 从 `plugins.json` 移除）。 */
+        'plugins/remove': async (_req, body) => {
+            const spec = typeof body?.spec === 'string' ? body.spec.trim() : '';
+            if (spec === '')
+                throw new Error('缺少 spec');
+            const pkg = deps.moduleNameOf(spec);
+            await deps.plugins.remove(spec);
+            await deps.market.uninstall(pkg).catch(() => {});
+            await deps.reload?.();
+            return { ok: true };
+        },
+        /** 路由偏好：DSH 里没有「插件接管路由」这回事，收下不报错。 */
+        'plugins/prefer': async () => ({ ok: true }),
+        /**
+         * 更新全部：对每个已装且能问到最新版的包做一次强制重装。
+         *
+         * 与原版一致：**逐个**装（并发下载会把带宽和 CPU 打满，且解包
+         * 目录名可能冲突），失败的只记日志、不中断其余。
+         */
+        'plugins/update': async () => {
+            const installed = await deps.plugins.list();
+            const updated = [];
+            const failed = [];
+            for (const item of installed) {
+                const spec = item.spec;
+                if (typeof spec !== 'string' || spec === '')
+                    continue;
+                const pkg = deps.moduleNameOf(spec);
+                const current = await deps.market.latestVersion(pkg).catch(() => undefined);
+                if (current === undefined)
+                    continue;
+                const out = await deps.installOne(spec, undefined, true);
+                if (out.ok === true)
+                    updated.push(pkg);
+                else
+                    failed.push({ package: pkg, error: out.error ?? 'unknown' });
+            }
+            await deps.reload?.();
+            return { ok: true, updated, failed };
+        },
+        /**
+         * 检查更新：**同步**返回每个已装插件的最新版本与状态。
+         *
+         * 形状照 `ui/plugins.js:317` 的 `checkUpdates`：`{state, plugins:[...], at}`，
+         * 每项 `{spec, package, latest?, head?, status, off?}`，`status` 取
+         * `update` / `current` / `unknown`。GitHub 源没有版本号 → `unknown`。
+         */
+        'plugins/check': async () => {
+            const installed = await deps.plugins.list();
+            const plugins = [];
+            for (const item of installed) {
+                const spec = item.spec;
+                if (typeof spec !== 'string' || spec === '')
+                    continue;
+                const pkg = deps.moduleNameOf(spec);
+                const current = await deps.pluginVersion?.(pkg).catch(() => undefined);
+                const latest = await deps.market.latestVersion(pkg).catch(() => undefined);
+                const status = current === undefined || latest === undefined
+                    ? 'unknown'
+                    : (latest === current ? 'current' : 'update');
+                plugins.push({
+                    spec,
+                    package: pkg,
+                    ...(latest === undefined ? {} : { latest }),
+                    ...(current === undefined ? {} : { version: current }),
+                    status,
+                    ...(item.enabled === false ? { off: true } : {}),
+                });
+            }
+            return { state: null, plugins, at: Date.now() };
+        },
+        /**
+         * npm 说某个包是什么（版本、周下载、许可证）。
+         *
+         * 页面拿到空对象就显示「unknown」并允许 Install——**不要回 501**，
+         * 那会让商店整段走进 catch。这里只问 `dist-tags.latest`，问不到就空。
+         */
+        'plugins/npm': async (req) => {
+            const names = new URL(req.url ?? '/', 'http://x').searchParams.get('names') ?? '';
+            const out = {};
+            for (const name of names.split(',').map((x) => x.trim()).filter((x) => x !== '')) {
+                const version = await deps.market.latestVersion(name).catch(() => undefined);
+                if (version !== undefined)
+                    out[name] = { version, weekly: 0 };
+            }
+            return { npm: out };
+        },
+        /** GitHub 源插件的当前提交：不查，页面显示 unknown。 */
+        'plugins/git': async () => ({ heads: {} }),
         /** GitHub 话题插件的抓取结果。 */
         'plugins/github': async () => ({ repos: [] }),
         /** magpie 的内置插件：DSH 里没有这套东西。 */

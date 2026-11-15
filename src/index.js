@@ -676,6 +676,12 @@ export function apply(ctx) {
         adapter,
         auth,
         plugins,
+        // 桌面 UI 的插件页要按「目录名」显示包名（`plugins/list` 用它推 name）
+        moduleNameOf,
+        // 安装/升级：与手机面板同一套逻辑（下载 → 解包 → 登记 → 重扫）
+        installOne: (spec, locale, force) => installOne(spec, locale, force),
+        // 磁盘上这个包的版本号（`plugins/check` 用来比最新版）
+        pluginVersion: (pkg) => pluginVersion(paths, pkg),
         snapshot: async () => latest,
         reload: async () => { await reload(); await refresh(); },
         refresh: async () => { await refresh(); },
@@ -1522,7 +1528,7 @@ export function apply(ctx) {
      * 不会被装载（`dirOfSpec` 也会因为「没有 catalog 条目」跳过它）。
      * 登记用**裸包名**——手机上的包全部在 `plugins/node_modules` 下，裸名即可解析。
      */
-    async function installOne(spec, locale) {
+    async function installOne(spec, locale, force = false) {
         const raw = typeof spec === 'string' ? spec.trim() : '';
         if (raw === '') {
             return { ok: false, error: text(locale, '请先填写包名或链接', 'Enter a package or link first') };
@@ -1535,7 +1541,7 @@ export function apply(ctx) {
             const inMarket = listings.find(l => l.package === raw);
             result = inMarket === undefined
                 ? await market.installSpec(raw)
-                : await market.install(inMarket.package);
+                : await market.install(inMarket.package, undefined, { force });
         }
         catch (e) {
             result = { ok: false, error: e instanceof Error ? e.message : String(e) };

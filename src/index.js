@@ -443,7 +443,26 @@ export function apply(ctx) {
         // `registerAdapterIdempotent` 正是为此：**只吞「已注册」这一种错误**，其余
         // 照常抛。以前笼统 catch `LlmError` 会把真正的注册失败（provider 名非法之类）
         // 也咽掉，表现成「一个 provider 都没有」而且日志里什么也看不到。
-        try {
+        // ⚠ 一个 provider 都没有时必须**跳过注册**：DSH 的
+        // `registerAdapter([])` 会直接抛 `INVALID_ADAPTER`
+        //（`an adapter must register at least one provider`），而那个异常会
+        // 一路冒到 RPC 层，被当成「安装失败」显示给用户——真正的原因
+        //（plugins.json 里一个插件都没有）反而被盖住了。
+        // 有旧路由就先放掉，让面板的空态去说明「还没有安装插件」。
+        if (providers.length === 0) {
+            if (registration !== undefined) {
+                try {
+                    if (typeof registration.replace === 'function')
+                        registration.replace([]);
+                    else if (typeof registration === 'function')
+                        registration();
+                }
+                catch { /* 放不掉也不影响下面的日志 */ }
+                registration = undefined;
+            }
+            ctx.logger?.warn?.('[magpie-hub] 没有可注册的 provider（插件全被停用或 plugins.json 为空），跳过适配器注册');
+        }
+        else try {
             if (registration === undefined) {
                 // ⚠ `registerAdapter` 是**整批**语义：列表里只要有一个 provider 已被
                 // 别的插件（例如 dsh-providers-hub 的 raccoon）注册，整批都会抛

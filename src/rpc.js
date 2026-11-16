@@ -40,7 +40,12 @@ function ok(value) {
 }
 /** 包一个业务错误（不用 HTTP 状态码表达）。 */
 function fail(code, message) {
-    return { ok: false, error: { code, message } };
+    // ⚠ `details` 不能省：DSH 的 `rpcErrorSchema`（dsh-client-connection
+    // 的 lib/index.js）把 `error.details` 定义成**必填**的 `z.record(...)`，
+    // 少了它 zod 校验失败，客户端拿到的就只剩
+    // `TypeError: connection: invalid server-response` —— 真实错误（比如
+    // 「缺少 package」「安装失败」）被整个吃掉，界面上只剩一句没头没脑的话。
+    return { ok: false, error: { code, message, details: {} } };
 }
 /**
  * 注册 `/api/magpie-hub`。

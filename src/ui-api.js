@@ -13,7 +13,7 @@
  * ⚠ `state` 的形状按 magpie 的 `stateJSON`（internal/gui/api.go:289）给，
  * 字段名和嵌套必须一致，否则 app.js 在启动时就会读 undefined。
  */
-import { readFile } from 'node:fs/promises';
+import { readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 /** magpie 的 settings.json（只读，用于让页面拿到语言/主题等）。 */
@@ -25,6 +25,19 @@ async function readMagpieSettings(root) {
     catch {
         return {};
     }
+}
+
+/**
+ * 原子写一个 JSON 文件：先写同目录的临时文件再 `rename`。
+ *
+ * 直接 `writeFile` 到目标文件时，进程在写一半退出会留下半个 JSON，
+ * 下次 magpie 读它就是 `SyntaxError`（设置全丢）。`rename` 在同一分区内
+ * 是原子的，所以要么是旧内容、要么是新内容。
+ */
+async function writeAtomic(file, value) {
+    const tmp = `${file}.tmp-${process.pid}`;
+    await writeFile(tmp, JSON.stringify(value, null, 2) + '\n', 'utf8');
+    await rename(tmp, file);
 }
 
 /**
@@ -400,7 +413,23 @@ export function makeUiHandlers(deps) {
         'model-speeds': async () => [],
         partner: async () => [],
         cli: async () => ({ items: [] }),
-        fonts: async () => ({ ui: '', code: '', list: [] }),
+        // 页面要的是**数组**（`Array.isArray(list)` 否则抛 invalid font collection），
+        // 给 `{ui, code, list}` 会被当成非法、那一行显示「无法读取已安装字体」。
+        fonts: async () => [],
+        /**
+         * 额度卡（Usage › 额度）。
+         *
+         * 页面要一个**数组**（`Array.isArray(q)`，否则当成「读取失败」保留旧值），
+         * 每项是一张卡（provider / user / windows / plan 等）。桌面端不在
+         * 这里采集额度——那是手机面板的 `latest.usage`——回空数组即「还没有
+         * 额度数据」，页面显示空态。
+         */
+        'usage/quotas': async () => [],
+        /**
+         * 额度的历史曲线（`?days=45`）。页面把结果整体 `JSON.stringify` 比较，
+         * 回空对象即可，曲线区不画。
+         */
+        'usage/quotas/history': async () => ({}),
         open: async () => null,
         icons: async () => null,
 
@@ -592,6 +621,81 @@ export function makeUiHandlers(deps) {
         'plugins/github': async () => ({ repos: [] }),
         /** magpie 的内置插件：DSH 里没有这套东西。 */
         'plugins/builtin': async () => [],
+
+        /**
+         * 设置页：magpie 自己的 `settings.json`。
+         *
+         * 页面 GET 读全量，POST 写回合并后的全量（`savePrefs` 每次都带齐
+         * 所有字段，只发变化的键）。**直接落 magpie 的 settings.json**，而不是
+         * 另存一份——设置页改的就是给 magpie 读的东西，另存等于改了不生效。
+         *
+         * `readMagpieSettings` 读不到时回 `{}`，所以首次写入会新建文件。
+         */
+        settings: async (_req, body) => {
+            const current = await readMagpieSettings(deps.root);
+            const isWrite = body !== undefined && body !== null && typeof body === 'object' && !Array.isArray(body);
+            if (!isWrite)
+                return current;
+            const next = { ...current, ...body };
+            await writeAtomic(join(deps.root, 'settings.json'), next);
+            return next;
+        },
+        /**
+         * 「会话历史读取」的两个开关（Settings › 隐私）。
+         *
+         * 页面要的形状是 `{asked, all, found:[]}`（`ui/plugins/sessions/settings.js:52`），
+         * `found` 是「本机找到的 agent 列表」。DSH 不读各 agent 的 session
+         * 历史，所以 `found` 恒为空数组；两个开关存在 settings.json 的
+         * `sessionReads` 子对象里。
+         */
+        'sessions/reads': async (_req, body) => {
+            const s = await readMagpieSettings(deps.root);
+            const cur = {
+                asked: s?.sessionReads?.asked === true,
+                all: s?.sessionReads?.all === true,
+                found: [],
+            };
+            if (body === undefined || body === null || typeof body !== 'object')
+                return cur;
+            const next = {
+                asked: typeof body.asked === 'boolean' ? body.asked : cur.asked,
+                all: typeof body.all === 'boolean' ? body.all : cur.all,
+                found: [],
+            };
+            await writeAtomic(join(deps.root, 'settings.json'), { ...s, sessionReads: next });
+            return next;
+        },
+
+        /**
+         * 隐私模型（Settings › 隐私的「个人数据脱敏」）。
+         *
+         * 页面读 `{on, model, models, installed, downloading, failed, running, supported}`
+         * 并直接画行。DSH 里没有本地脱敏模型，回空态：`on:false` + `models:[]`
+         * 让那一行显示「未启用」，不报错。
+         */
+        'privacy-model': async () => ({
+            on: false,
+            model: '',
+            models: [],
+            installed: false,
+            downloading: false,
+            failed: false,
+            running: false,
+            supported: false,
+        }),
+        /**
+         * WebDAV 同步（Settings › 同步与备份）。
+         *
+         * 页面 `api("davsync").catch(() => ({}))` 本来就兜底，回 `{}` 即空态；
+         * 但回 501 会在控制台留一条红字，所以显式给空对象。
+         */
+        davsync: async () => ({}),
+        /**
+         * 自动备份列表（Settings › 同步与备份 → 自动备份）。
+         *
+         * 页面读 `{backups:[...], error?}` 并画列表；回空数组即「还没有备份」。
+         */
+        autobackup: async () => ({ backups: [] }),
         /**
          * Agents 页问的几个「本机客户端」清单。DSH 里没有 magpie 那套
          * 外部 agent（claudecode / codex / opencode…），一律回空数组——

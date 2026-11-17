@@ -60,13 +60,14 @@ function setup() {
       accountKeys: async () => ['p1#1'],
       ensureFresh: async () => ({ accountId: 'acc1' }),
       declares: () => true,
+      checkinOf: async () => ({ outcome: 'claimed', credit: 50, streak: 1 }),
     },
     policy,
     adapter: { catalogRows: async () => [] },
     auth: {},
     plugins: { list: async () => [] },
     snapshot: async () => ({
-      providers: [{ id: 'p1', name: '测试平台', accounts: [{ key: 'p1#1', accountId: 'acc1' }], models: 3, hasUsage: true, off: false }],
+      providers: [{ id: 'p1', name: '测试平台', accounts: [{ key: 'p1#1', accountId: 'acc1' }], models: 3, hasUsage: true, hasCheckin: true, off: false }],
       usage: [],
       stats: { period: 'today', tokens: 0, calls: 0, errors: 0, cost: 0, unpriced: 0, series: [], byProvider: [] },
       routing: [],
@@ -75,6 +76,7 @@ function setup() {
     reload: async () => {}, refresh: async () => {},
     market: {},
     log: () => {},
+    checkinSchedule: async (enabled) => ({ enabled: enabled === undefined ? true : enabled }),
   }
   const stop = mount(scoped, { handlers: makeUiHandlers(deps), log: () => {} })
   return { dir, scoped, getRoute: () => captured, getRoutes: () => routes ?? [], stop }
@@ -187,5 +189,63 @@ test('未实现的接口回 501 并说明缺哪个', async () => {
     const json = JSON.parse(res.body.toString('utf8'))
     assert.equal(json.error, 'not-implemented')
     assert.equal(json.api, 'sessions')
+  } finally { stop?.(); rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('/api/state 包含 checkinPlugins 与 checkinAccounts，用于驱动签到区域渲染', async () => {
+  const { getRoute, dir, stop } = setup()
+  try {
+    const res = await get(getRoute(), `${MOUNT}/api/state`)
+    assert.equal(res.statusCode, 200)
+    const json = JSON.parse(res.body.toString('utf8'))
+    assert.ok(Array.isArray(json.checkinPlugins), 'state 应含 checkinPlugins 数组')
+    assert.ok(Array.isArray(json.checkinAccounts), 'state 应含 checkinAccounts 数组')
+    assert.equal(json.checkinPlugins.length, 1)
+    assert.equal(json.checkinPlugins[0].id, 'p1')
+    assert.equal(json.checkinAccounts.length, 1)
+    assert.equal(json.checkinAccounts[0].by, 'plugin:p1')
+    assert.equal(json.checkinAccounts[0].key, 'p1#1')
+  } finally { stop?.(); rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('/api/usage/checkin-account 能够成功触发单账号签到', async () => {
+  const { getRoute, dir, stop } = setup()
+  try {
+    const res = await get(getRoute(), `${MOUNT}/api/usage/checkin-account`, 'POST', {
+      by: 'plugin:p1',
+      key: 'p1#1',
+    })
+    assert.equal(res.statusCode, 200)
+    const json = JSON.parse(res.body.toString('utf8'))
+    assert.equal(json.outcome, 'claimed')
+    assert.equal(json.credit, 50)
+    assert.equal(json.streak, 1)
+    assert.equal(json.asked, true)
+  } finally { stop?.(); rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('/api/settings/plugin-checkin 能够更新插件自动签到开关', async () => {
+  const { getRoute, dir, stop } = setup()
+  try {
+    const res = await get(getRoute(), `${MOUNT}/api/settings/plugin-checkin`, 'POST', {
+      provider: 'p1',
+      on: true,
+    })
+    assert.equal(res.statusCode, 200)
+    const json = JSON.parse(res.body.toString('utf8'))
+    assert.equal(json.checkinAuto, true)
+  } finally { stop?.(); rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('/api/login/usage 能够返回账号级签到就绪信息', async () => {
+  const { getRoute, dir, stop } = setup()
+  try {
+    const res = await get(getRoute(), `${MOUNT}/api/login/usage?agent=p1`)
+    assert.equal(res.statusCode, 200)
+    const json = JSON.parse(res.body.toString('utf8'))
+    assert.ok('p1#1' in json)
+    assert.equal(json['p1#1'].checkinKey, 'p1#1')
+    assert.equal(json['p1#1'].checkinBy, 'plugin:p1')
+    assert.equal(json['p1#1'].checkins, true)
   } finally { stop?.(); rmSync(dir, { recursive: true, force: true }) }
 })

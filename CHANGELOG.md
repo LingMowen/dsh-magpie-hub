@@ -2,6 +2,25 @@
 
 本文件记录每个版本的变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 0.2.2 — 2026-11-17
+
+修复签到按钮与重新扫描按钮缺失、启动竞态快照空态与签到后端端点未实现问题。
+
+### 修复
+
+- **DSH 桌面端 Agent 卡片与面板按钮补齐**
+  - 在 DSH 桌面端 MagpiePage 的空态提示页与导航栏右侧补充「重新扫描」按钮，避免因异步装配竞态卡在空提示。
+  - 在具备签到能力的供应商（`hasCheckin`）卡片标题栏将原先纯展示的静态「可签到」标签升级为可点击的「立即签到」交互按钮，支持防重、执行态与即时结果反馈展示。
+- **Web 控制台签到区域与按钮缺失修复**
+  - `/api/state` 补全 `checkinPlugins` 与 `checkinAccounts` 字段，驱动 Web 界面正确渲染设置页签到配置区域与「Check in now」按钮。
+- **Web 端签到与额度端点补齐**
+  - 补齐 `usage/checkin-account` 实现单账号即时签到调度并返回标准结果结构。
+  - 补齐 `settings/plugin-checkin` 与 `settings/checkin-account` 接收并持久化自动签到开关。
+  - 补齐 `login/usage` 支持账号级签到就绪与额度探测。
+- **后端签到调度与快照竞态修复**
+  - 修复 `checkin` RPC 与移动端动作在未指定供应商时将平台 ID 误当作 Key 遍历的问题，改为先取登录平台再遍历各平台有效账号 Key。
+  - 在 `panel.snapshot` 中增加对装载 Promise 的等待与按需刷新机制，杜绝未装配完成即返回空快照。
+
 ## 0.2.1 — 2026-11-16
 
 修掉两个会让插件生态「静默失效」的缺陷：桌面端装不上插件，以及面板里任何一次写操作都会把插件清单写成 magpie 读不出来的形状。

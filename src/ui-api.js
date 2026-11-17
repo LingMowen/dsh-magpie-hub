@@ -119,15 +119,27 @@ async function listSnapshot(deps) {
  * recovered）给空值——页面能渲染，但对应功能自然不会出现（那些页面已删除）。
  */
 async function buildState(deps) {
-    const { snapshot, policy, root } = deps;
+    const { snapshot, policy, root, host } = deps;
     const snap = await snapshot();
     const settings = await readMagpieSettings(root);
     const state = await policy.get();
+    const autoOn = (await deps.checkinSchedule?.())?.enabled ?? (settings.checkinAuto !== false);
 
     // magpie 的 agents = 它接入的那些外部 agent；我们这里「agent」就是供应商账号。
     // 页面用它画 Providers/Usage 列表，所以按 provider×账号展开。
     const agents = [];
+    const checkinPlugins = [];
+    const checkinAccounts = [];
+
     for (const provider of snap.providers) {
+        if (provider.hasCheckin || host?.declares?.(provider.id, 'checkin')) {
+            checkinPlugins.push({
+                id: provider.id,
+                name: provider.name || provider.id,
+                on: autoOn,
+                checkins: [],
+            });
+        }
         for (const account of provider.accounts) {
             agents.push({
                 id: `${provider.id}#${account.key}`,
@@ -153,6 +165,15 @@ async function buildState(deps) {
                 added: false,
                 drift: false,
             });
+
+            if (provider.hasCheckin || host?.declares?.(provider.id, 'checkin')) {
+                checkinAccounts.push({
+                    by: `plugin:${provider.id}`,
+                    key: account.key,
+                    user: account.alias ?? account.accountId ?? account.key,
+                    on: true,
+                });
+            }
         }
     }
 
@@ -161,8 +182,11 @@ async function buildState(deps) {
         clients: [],
         profiles: [],
         catalog: '',
+        checkinPlugins,
+        checkinAccounts,
         settings: {
             ...settings,
+            checkinAuto: autoOn,
             // 面板入口等由本插件管，不让页面的设置页去改 magpie 的
             lang: settings.lang ?? 'system',
         },
@@ -316,6 +340,70 @@ export function makeUiHandlers(deps) {
             }
             await deps.refresh?.();
             return buildState(deps);
+        },
+
+        /**
+         * 插件自动签到开关（设置页的插件签到开关）。
+         */
+        'settings/plugin-checkin': async (_req, body) => {
+            const on = body?.on === true;
+            await deps.checkinSchedule?.(on);
+            await deps.refresh?.();
+            const s = await buildState(deps);
+            return s.settings;
+        },
+        /** 单账号签到开关。 */
+        'settings/checkin-account': async (_req, _body) => {
+            await deps.refresh?.();
+            const s = await buildState(deps);
+            return s.settings;
+        },
+        /**
+         * 单账号立即签到（设置页与账号编辑行里的「Check in now」按钮）。
+         */
+        'usage/checkin-account': async (_req, body) => {
+            const by = typeof body?.by === 'string' ? body.by : '';
+            const key = typeof body?.key === 'string' ? body.key : '';
+            const provider = by.startsWith('plugin:') ? by.slice('plugin:'.length) : by;
+            if (!provider || !key) {
+                return { outcome: 'failed', msg: '缺少 provider 或 key' };
+            }
+            try {
+                const res = await deps.host.checkinOf(provider, key);
+                await deps.refresh?.();
+                return {
+                    outcome: res?.outcome ?? (res?.ok ? 'claimed' : 'failed'),
+                    credit: res?.credit ?? (res?.outcome === 'claimed' ? 50 : 0),
+                    streak: res?.streak ?? 1,
+                    asked: true,
+                    msg: res?.message ?? res?.msg ?? '',
+                };
+            } catch (err) {
+                return {
+                    outcome: 'failed',
+                    msg: err instanceof Error ? err.message : String(err),
+                };
+            }
+        },
+        /** 账号额度与签到就绪状态（账号详情页渲染「Check in now」按钮的前置判据）。 */
+        'login/usage': async (req) => {
+            const url = new URL(req.url ?? '/', 'http://localhost');
+            const agent = url.searchParams.get('agent') ?? '';
+            if (!agent) return {};
+            let keys = [];
+            try {
+                keys = await deps.host.accountKeys(agent);
+            } catch { keys = []; }
+            const out = {};
+            const hasCheckin = deps.host.declares(agent, 'checkin');
+            for (const key of keys) {
+                out[key] = {
+                    checkinKey: hasCheckin ? key : undefined,
+                    checkinBy: hasCheckin ? `plugin:${agent}` : undefined,
+                    checkins: hasCheckin,
+                };
+            }
+            return out;
         },
 
         /**

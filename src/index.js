@@ -534,7 +534,7 @@ export function apply(ctx) {
         // 插件」。桌面端没这个问题，因为打开面板时会经 RPC 重新取一次。
         await refresh(true).catch(() => { });
     };
-    void reload()
+    let reloadPromise = reload()
         .then(() => warmUp())
         .catch((e) => {
         console.error('[reload-fail] ' + (e instanceof Error ? e.stack : String(e)));
@@ -701,7 +701,13 @@ export function apply(ctx) {
         installOne: (spec, locale, force) => installOne(spec, locale, force),
         // 磁盘上这个包的版本号（`plugins/check` 用来比最新版）
         pluginVersion: (pkg) => pluginVersion(paths, pkg),
-        snapshot: async () => latest,
+        // 自动签到开关读写
+        checkinSchedule,
+        snapshot: async () => {
+            if (reloadPromise) await reloadPromise.catch(() => {});
+            if (!latest?.providers?.length) await refresh(true).catch(() => {});
+            return latest;
+        },
         reload: async () => { await reload(); await refresh(); },
         refresh: async () => { await refresh(); },
         market,
@@ -737,10 +743,17 @@ export function apply(ctx) {
         modulesDir: paths.modules,
         // 自动签到：读/写开关与上次执行时间
         checkinSchedule,
-        snapshot: async () => latest,
+        snapshot: async () => {
+            if (reloadPromise) await reloadPromise.catch(() => {});
+            if (!latest?.providers?.length) await refresh(true).catch(() => {});
+            return latest;
+        },
         reload: async () => {
-            await reload();
-            await refresh();
+            reloadPromise = (async () => {
+                await reload();
+                await refresh();
+            })();
+            await reloadPromise;
             return { loaded: host.loaded.length, failed: host.loadFailures.length };
         },
         setPeriod: async (next) => {
@@ -760,21 +773,23 @@ export function apply(ctx) {
             await refresh();
         },
         checkin: async (provider, signal) => {
-            const keys = provider === '' ? await host.signedInProviders() : await host.accountKeys(provider);
+            const providers = provider === '' ? await host.signedInProviders() : [provider];
             let claimed = 0;
             let done = 0;
             let failed = 0;
-            for (const key of keys) {
-                if (signal?.aborted === true)
-                    break;
-                const id = provider === '' ? providerOfKey(key) : provider;
-                const result = await host.checkinOf(id, key);
-                if (result?.outcome === 'claimed')
-                    claimed += 1;
-                else if (result?.outcome === 'done')
-                    done += 1;
-                else
-                    failed += 1;
+            for (const p of providers) {
+                const keys = await host.accountKeys(p);
+                for (const key of keys) {
+                    if (signal?.aborted === true)
+                        break;
+                    const result = await host.checkinOf(p, key);
+                    if (result?.outcome === 'claimed')
+                        claimed += 1;
+                    else if (result?.outcome === 'done')
+                        done += 1;
+                    else
+                        failed += 1;
+                }
             }
             await refresh();
             return { claimed, done, failed };
@@ -1118,20 +1133,23 @@ export function apply(ctx) {
                     },
                     result: async (signal) => {
                         const provider = providerArg(event);
-                        const keys = provider === '' ? await host.signedInProviders() : await host.accountKeys(provider);
+                        const providers = provider === '' ? await host.signedInProviders() : [provider];
                         let claimed = 0;
                         let done = 0;
                         let failed = 0;
-                        for (const key of keys) {
-                            if (signal.aborted)
-                                break;
-                            const result = await host.checkinOf(provider === '' ? providerOfKey(key) : provider, key);
-                            if (result?.outcome === 'claimed')
-                                claimed += 1;
-                            else if (result?.outcome === 'done')
-                                done += 1;
-                            else
-                                failed += 1;
+                        for (const p of providers) {
+                            const keys = await host.accountKeys(p);
+                            for (const key of keys) {
+                                if (signal.aborted)
+                                    break;
+                                const result = await host.checkinOf(p, key);
+                                if (result?.outcome === 'claimed')
+                                    claimed += 1;
+                                else if (result?.outcome === 'done')
+                                    done += 1;
+                                else
+                                    failed += 1;
+                            }
                         }
                         await refresh();
                         return [{

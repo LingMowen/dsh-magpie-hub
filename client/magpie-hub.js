@@ -234,17 +234,41 @@ function Rank({ rows, valueOf, locale }) {
     ))
   );
 }
-function AgentsTab({ snapshot, locale }) {
+function AgentsTab({ snapshot, locale, rpcCall, onRescan }) {
   const providers = Array.isArray(snapshot?.providers) ? snapshot.providers : [];
+  const [checkinStatus, setCheckinStatus] = useState({});
+
+  const doCheckin = async (providerId) => {
+    if (!rpcCall) return;
+    setCheckinStatus((prev) => ({ ...prev, [providerId]: { busy: true, msg: "" } }));
+    try {
+      const res = await rpcCall("checkin", { provider: providerId });
+      let msg = "";
+      if (res?.claimed > 0) msg = t(locale, `已签到 (+${res.claimed})`, `Checked in (+${res.claimed})`);
+      else if (res?.done > 0) msg = t(locale, "今日已签到", "Already checked in today");
+      else if (res?.failed > 0) msg = t(locale, "签到失败", "Check-in failed");
+      else msg = t(locale, "签到完成", "Check-in done");
+      setCheckinStatus((prev) => ({ ...prev, [providerId]: { busy: false, msg, bad: !!res?.failed && !res?.claimed && !res?.done } }));
+    } catch (err) {
+      setCheckinStatus((prev) => ({ ...prev, [providerId]: { busy: false, msg: err?.message || String(err), bad: true } }));
+    }
+  };
+
   if (providers.length === 0) {
     return React.createElement(
       "div",
-      { className: "none-box" },
-      t(
+      { className: "none-box", style: { display: "flex", flexDirection: "column", gap: 12, alignItems: "center" } },
+      React.createElement("div", null, t(
         locale,
         "还没有安装 magpie 插件。把插件放进 magpie 的数据目录后重新扫描。",
         "No magpie plugins installed yet. Add plugins to the magpie data directory, then rescan."
-      )
+      )),
+      onRescan ? React.createElement("button", {
+        type: "button",
+        className: "mini",
+        onClick: onRescan,
+        style: { cursor: "pointer", padding: "4px 12px" }
+      }, t(locale, "重新扫描", "Rescan")) : null
     );
   }
   return React.createElement(
@@ -255,10 +279,20 @@ function AgentsTab({ snapshot, locale }) {
       { key: p.id, className: "pq-group" },
       React.createElement(
         "div",
-        { className: "pq-gh" },
+        { className: "pq-gh", style: { display: "flex", alignItems: "center", gap: 8 } },
         React.createElement("span", { className: "pq-gn" }, p.name || p.id),
         (p.accounts?.length ?? 0) > 1 ? React.createElement("span", { className: "pq-count", title: t(locale, `${p.accounts.length} 个账号`, `${p.accounts.length} accounts`) }, String(p.accounts.length)) : React.createElement("span", { className: "pq-gnote" }, `${p.models ?? 0} ${t(locale, "个模型", "models")}`),
-        p.hasCheckin ? React.createElement("span", { className: "pq-gnote", style: { marginLeft: 0 } }, t(locale, "可签到", "check-in")) : null
+        p.hasCheckin && rpcCall ? React.createElement("button", {
+          type: "button",
+          className: "mini",
+          disabled: !!checkinStatus[p.id]?.busy,
+          style: { cursor: checkinStatus[p.id]?.busy ? "default" : "pointer" },
+          onClick: () => doCheckin(p.id)
+        }, checkinStatus[p.id]?.busy ? t(locale, "签到中…", "Checking in…") : t(locale, "立即签到", "Check in")) : (p.hasCheckin ? React.createElement("span", { className: "pq-gnote", style: { marginLeft: 0 } }, t(locale, "可签到", "check-in")) : null),
+        checkinStatus[p.id]?.msg ? React.createElement("span", {
+          className: "pq-gnote",
+          style: { marginLeft: 4, color: checkinStatus[p.id]?.bad ? "var(--red)" : "var(--green, #10b981)" }
+        }, checkinStatus[p.id].msg) : null
       ),
       p.error ? React.createElement(
         "div",
@@ -632,20 +666,32 @@ function MagpiePage({ rpcCall, locale }) {
       setBusy(false);
     }
   }, [rpcCall]);
+  const rescanAll = useCallback(async () => {
+    setBusy(true);
+    setError("");
+    try {
+      await rpcCall("plugins.reload", {});
+      setSnapshot(await rpcCall("panel.snapshot", {}) ?? null);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(false);
+    }
+  }, [rpcCall]);
   const body = useMemo(() => {
     if (snapshot === null) return null;
-    if (tab === "agents") return React.createElement(AgentsTab, { snapshot, locale });
+    if (tab === "agents") return React.createElement(AgentsTab, { snapshot, locale, rpcCall, onRescan: rescanAll });
     if (tab === "quotas") return React.createElement(QuotasTab, { snapshot, locale });
     if (tab === "usage") return React.createElement(UsageTab, { snapshot, locale, period, onPeriod: changePeriod });
     if (tab === "store") return React.createElement(StoreTab, { rpcCall, locale, snapshot });
     return React.createElement(RoutingTab, { snapshot, locale });
-  }, [snapshot, tab, locale, period, changePeriod, rpcCall]);
+  }, [snapshot, tab, locale, period, changePeriod, rpcCall, rescanAll]);
   return React.createElement(
     "div",
     { className: "mgh" },
     React.createElement(
       "div",
-      { className: "ptabs", role: "tablist" },
+      { className: "ptabs", role: "tablist", style: { display: "flex", alignItems: "center" } },
       TABS.map((x) => React.createElement("button", {
         key: x.id,
         type: "button",
@@ -653,7 +699,16 @@ function MagpiePage({ rpcCall, locale }) {
         "aria-selected": String(x.id === tab),
         className: x.id === tab ? "on" : void 0,
         onClick: () => setTab(x.id)
-      }, t(locale, x.zh, x.en)))
+      }, t(locale, x.zh, x.en))),
+      React.createElement("span", { style: { flex: 1 } }),
+      React.createElement("button", {
+        type: "button",
+        className: "mini",
+        disabled: busy,
+        onClick: rescanAll,
+        style: { marginRight: 8, cursor: busy ? "default" : "pointer" },
+        title: t(locale, "重新扫描插件目录并刷新", "Rescan plugin directory and refresh")
+      }, busy ? t(locale, "扫描中…", "Scanning…") : t(locale, "重新扫描", "Rescan"))
     ),
     React.createElement(
       "div",

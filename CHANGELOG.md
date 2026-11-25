@@ -2,6 +2,32 @@
 
 本文件记录每个版本的变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 0.2.3 — 2026-11-25
+
+补上桌面端仍然缺失的 15 个端点，这些端点全部是把上游 magpie 已有的页面接到我们的数据上。
+
+### 每日签到（新增，此前只在手机端有一半）
+
+- `/api/settings` 带上 `checkinPlugins` / `checkinAccounts` / `checkinAt`，设置页的签到段终于画得出来。
+- 新端点 `settings/plugin-checkin`（按插件开关）与 `settings/checkin-account`（按账号开关）。
+- 新端点 `usage/checkin-account`（立刻签一次）与 `usage/checkins/off`（今天还没签的账号）。
+- 签到结果落盘到 `checkins.json`，插件重启后额度卡仍显示「今天已签」。
+- 被单独关掉的账号不会在自动签到里被签回来。
+
+### 用量页
+
+- `usage/requests`：请求流水（分页、按供应商/账号/模型/失败筛选、时间桶序列）。
+- `usage/heatmap`：最近 90 天的每日用量。
+- `usage/arrange`：额度卡与请求表的排布、隐藏、客户端归并偏好。
+- `usage/quotas` 从空数组改成真实额度卡；`usage/quotas/refresh` 重新读某个平台。
+- `usage/quotas/history/holds` 与 `usage/codex-reset` 给出明确答复，不再 501。
+- `tune` 与 `context` 回空列表（页面显示「调用太少」而不是挂红条）。
+- 请求表的表头合计补上输入/输出/缓存读写四列，不再显示 NaN。
+
+### 平台编辑
+
+- `provider/keylisted`、`provider/arrange`、`provider/move`、`provider/unfetch`、`provider/test`、`provider/teststop`、`provider/detect`。
+- `provider/test` 是真发一次最小请求：能测出这个平台现在到底通不通。
 ## 0.2.2 — 2026-11-25
 
 只改包元数据，没有功能变化：修正一句描述，避免第三方目录把本插件误判成「只给网页版用」。

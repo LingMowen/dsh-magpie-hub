@@ -490,3 +490,52 @@ test('模型页：按供应商分组用 collapsible，平铺用一个 list', () 
     const modelRows = rows.filter(r => r.subtitle && /WPS 灵犀|CatPaw/.test(r.subtitle));
     assert.equal(modelRows.length, 3, '平铺出三个模型');
 });
+
+// ── 每日签到（手机详情页）──────────────────────────────────────────────
+
+test('详情页有签到段：hasCheckin 才显示，多账号给批量入口', () => {
+    const snap = snapshot({
+        provider: {
+            hasCheckin: true,
+            accounts: [
+                { key: 'wps-lingxi', accountId: 'wps-1111111111', signIn: 'kept' },
+                { key: 'wps-lingxi#2', accountId: 'wps-2222222222', signIn: 'kept' },
+            ],
+        },
+    });
+    const view = panelView(snap, null, { focus: 'wps-lingxi' });
+    const texts = visibleTexts(view);
+    // 标题是 Markdown 粗体，所以按包含判定
+    assert.ok(texts.some((t) => t.includes('每日签到')), '应当出现签到标题');
+    // 两个账号、都还没签 → 顶部要有批量入口
+    const buttons = flatten(view).filter((n) => n.type === 'actions').flatMap((n) => n.items);
+    const batch = buttons.find((b) => b.action?.id === 'checkin' && b.action?.args?.key === undefined);
+    assert.ok(batch !== undefined, '应当有整平台的批量签到入口');
+    assert.match(batch.label, /签到全部（2）/, '批量入口要带上待签个数');
+    // 每账号一行，点下去只签那一个
+    const rows = flatten(view).filter((n) => n.type === 'list').flatMap((n) => n.items ?? []);
+    const perAccount = rows.filter((r) => r.action?.id === 'checkin' && typeof r.action?.args?.key === 'string');
+    assert.equal(perAccount.length, 2, '每个账号一行可点的签到项');
+});
+
+test('不支持签到的平台不显示签到段', () => {
+    const view = panelView(snapshot(), null, { focus: 'wps-lingxi' });
+    assert.ok(!visibleTexts(view).some((t) => t.includes('每日签到')), '没有 checkin 钩子时不该出现');
+});
+
+test('今天已签的账号不再进批量入口', () => {
+    const today = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
+    const snap = snapshot({
+        provider: {
+            hasCheckin: true,
+            accounts: [
+                { key: 'a', accountId: 'acc-a', checkin: { day: today, outcome: 'claimed', credit: 30 } },
+                { key: 'b', accountId: 'acc-b', checkin: { day: today, outcome: 'claimed', credit: 20 } },
+            ],
+        },
+    });
+    const view = panelView(snap, null, { focus: 'wps-lingxi' });
+    const buttons = flatten(view).filter((n) => n.type === 'actions').flatMap((n) => n.items);
+    assert.ok(!buttons.some((b) => b.action?.id === 'checkin' && b.action?.args?.key === undefined), '全签完了就不该再有批量按钮');
+    assert.ok(visibleTexts(view).some((t) => t.includes('今天已签')), '状态要显示已签');
+});

@@ -357,6 +357,11 @@ export class MagpieAdapter extends LlmAdapter {
                 // DSH 的 turnId，只能用「这个会话里的第几次调用」近似（见 index.js）。
                 ...(typeof sessionID === 'string' ? { sessionID } : {}),
                 ...(tokens === undefined ? {} : { tokens }),
+                // 细分：桌面「请求」页签的表头合计按 input/output/cache 分列显示，
+                // 只给总量会让那三格是 undefined（页面显示「输入 undefined」）。
+                ...(sawUsage
+                    ? { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens }
+                    : {}),
                 ...(cost === undefined ? {} : { cost }),
             });
         }

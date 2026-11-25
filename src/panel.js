@@ -81,6 +81,16 @@ export const WORDS_ZH = {
     refreshQuota: '刷新额度',
     sectionQuota: '额度',
     noQuotaRows: '这个账号还没有额度数据',
+    sectionCheckin: '每日签到',
+    checkinNow: '签到',
+    checkinAll: '签到全部',
+    checkinAuto: '自动签到',
+    checkinChecked: '今天已签',
+    checkinNotYet: '今天还没签',
+    checkinOff: '这个账号不参与签到',
+    checkinFailed: '签到失败',
+    checkinNone: '这个平台不支持签到',
+    checkinHint: '按厂商的日切（北京时间）每账号一次',
     noAccounts: '还没有登录账号',
     needLogin: '需登录',
     providerOff: '已停用',
@@ -262,6 +272,16 @@ export const WORDS_EN = {
     refreshQuota: 'Refresh quota',
     sectionQuota: 'Quota',
     noQuotaRows: 'No quota data for this account yet',
+    sectionCheckin: 'Daily check-in',
+    checkinNow: 'Check in',
+    checkinAll: 'Check in all',
+    checkinAuto: 'Auto check-in',
+    checkinChecked: 'checked in today',
+    checkinNotYet: 'not checked in yet today',
+    checkinOff: 'left out of the daily check-in',
+    checkinFailed: 'check-in failed',
+    checkinNone: 'this provider has no check-in',
+    checkinHint: 'once a day per account, on the vendor\'s own day (UTC+8)',
     noAccounts: 'No signed-in account yet',
     needLogin: 'needs sign-in',
     providerOff: 'disabled',
@@ -527,6 +547,16 @@ function compactNumber(value) {
         return `${Math.round(value / 10_000)}万`;
     return groupDigits(value);
 }
+/**
+ * 厂商签到日按**北京时间**切（UTC+8），与上游 `wbToday()` 同一口径。
+ *
+ * 用本地时区会在晚上 8 点后把「今天已签」显示成「昨天」，因为 WPS 这类厂商
+ * 的后端也是按 UTC+8 记日。
+ */
+function beijingDay(now = Date.now()) {
+    return new Date(now + 8 * 3600_000).toISOString().slice(0, 10);
+}
+
 function groupDigits(value) {
     if (!Number.isFinite(value))
         return '—';
@@ -747,7 +777,7 @@ export function panelView(snapshot, caps, ui) {
         // 不设会落到 `DshUiPluginPalette.defaultAccent`（0x3D6FD6，主题蓝）。
         type: 'stack',
         title: w.panelTitle,
-        children: [navChips(page, w), ...pageBody(snapshot, page, query, w, normalizeInstallStatus(ui?.install, w), ui?.update, ui?.storeLimit ?? STORE_PAGE, ui?.display ?? null)],
+        children: [navChips(page, w), ...pageBody(snapshot, page, query, w, normalizeInstallStatus(ui?.install, w), ui?.update, ui?.storeLimit ?? STORE_PAGE, ui?.display ?? null, ui?.checkin ?? null)],
     };
 }
 /**
@@ -829,7 +859,7 @@ function normalizeUpdateStatus(raw, w) {
         return { text: w.pluginUpdateFailed(String(raw.error ?? w.metricNone)), tone: 'bad' };
     return null;
 }
-function pageBody(snapshot, page, query, w, installStatus, updateStatus = null, storeLimit = STORE_PAGE, display = null) {
+function pageBody(snapshot, page, query, w, installStatus, updateStatus = null, storeLimit = STORE_PAGE, display = null, checkin = null) {
     switch (page) {
         case PAGE_QUOTAS:
             return quotaTab(snapshot, w);
@@ -840,7 +870,7 @@ function pageBody(snapshot, page, query, w, installStatus, updateStatus = null, 
             // 商店已并入插件页；旧状态里残留的 page=store 也渲染插件页，避免空白。
             return pluginsPage(snapshot, w, updateStatus, storeLimit);
         case PAGE_SETTINGS:
-            return settingsPage(snapshot, w, display);
+            return settingsPage(snapshot, w, display, checkin);
         default:
             return agentTab(snapshot, w, query);
     }
@@ -1166,7 +1196,7 @@ function modelsPage(snapshot, w, display = null) {
     children.push({ type: 'text', text: w.modelsHint, tone: 'muted' });
     return children;
 }
-function settingsPage(snapshot, w, display = null) {
+function settingsPage(snapshot, w, display = null, checkin = null) {
     const providers = Array.isArray(snapshot.providers) ? snapshot.providers : [];
     const accounts = providers.reduce((sum, p) => sum + (Array.isArray(p.accounts) ? p.accounts.length : 0), 0);
     const models = providers.reduce((sum, p) => sum + (isFiniteNumber(p.models) ? p.models : 0), 0);
@@ -1185,6 +1215,21 @@ function settingsPage(snapshot, w, display = null) {
             type: 'actions',
             items: [{ label: w.settingsRefresh, icon: 'retry', action: 'refreshStats' }],
         },
+        // 自动签到：宿主每 10 分钟看一次、距上次满 24 小时签一轮。手机上只
+        // 给一个总开关（逐账号的排除放在平台详情页的签到列表里，那里上下文在）。
+        { type: 'text', text: `**${w.sectionCheckin}**` },
+        {
+            type: 'chips',
+            label: w.checkinAuto,
+            bind: 'data.checkin.auto',
+            value: checkin?.auto === true ? 'on' : 'off',
+            options: [
+                { label: w.displayOn, value: 'on' },
+                { label: w.displayOff, value: 'off' },
+            ],
+            onChange: { id: 'setCheckinAuto' },
+        },
+        { type: 'text', text: w.checkinHint, tone: 'muted' },
         // 显示偏好。三项都是 `chips`（带 bind 才能写），点一下立刻生效 ——
         // 状态条与脚注是 App 常驻的位置，用户随口就能关掉比翻开关重要。
         { type: 'text', text: `**${w.displaySection}**` },
@@ -1475,6 +1520,10 @@ function providerDetail(snapshot, provider, w) {
     children.push(accounts.length === 0
         ? { type: 'text', text: w.noAccounts, tone: 'muted' }
         : { type: 'list', items: accounts.map(account => accountRow(account, w)) });
+    // 签到：**只有声明了 `checkin` 钩子的平台才画这一段**——没有这个钩子的
+    // 平台把标题画出来只会让人以为漏了按钮。
+    for (const node of checkinNodes(provider, snapshot, w))
+        children.push(node);
     // 额度：这一家的所有账号，每个账号一条进度条（有窗口才画）。
     const usage = Array.isArray(snapshot.usage) ? snapshot.usage : [];
     const mine = usage.filter(item => item.provider === provider.id);
@@ -1756,6 +1805,70 @@ function quotaAccountRow(item, w, providerLabel) {
  * 条尾（`caption`）优先给「剩多少」而不是百分比：百分比在接近满额时
  * 反而比「剩 1 智点」抽象。
  */
+/**
+ * 详情页的「每日签到」段。
+ *
+ * 手机端**没有上游那套账号级开关**（点数太密会变成一屏开关），只给两件事：
+ * 每个账号今天签没签、以及一个「签到」按钮。厂商的日切按北京时间算，
+ * 与上游 `wbToday()` 一致 —— 否则晚上 8 点后会显示成「昨天已签」。
+ */
+function checkinNodes(provider, snapshot, w) {
+    if (provider.hasCheckin !== true)
+        return [];
+    const accounts = Array.isArray(provider.accounts) ? provider.accounts : [];
+    if (accounts.length === 0)
+        return [];
+    const today = beijingDay();
+    // 还有账号今天没签时给一个批量入口：多账号平台逐行点太累
+    const pending = accounts.filter((account) => account.checkin?.day !== today || account.checkin?.outcome === 'failed');
+    const nodes = [
+        { type: 'text', text: `**${w.sectionCheckin}**` },
+        ...(accounts.length > 1 && pending.length > 0
+            ? [{ type: 'actions', items: [{ label: `${w.checkinAll}（${pending.length}）`, action: { id: 'checkin', args: { provider: provider.id } } }] }]
+            : []),
+        {
+            type: 'list',
+            items: accounts.map((account) => {
+                const r = account.checkin;
+                const state = checkinStateText(r, today, w);
+                return {
+                    // 账号名与上面那行 list 一致（`accountId` 已是明文）
+                    title: account.accountId ?? account.key,
+                    subtitle: state.text,
+                    ...(state.tone === undefined ? {} : { tone: state.tone }),
+                    icon: 'retry',
+                    action: { id: 'checkin', args: { provider: provider.id, key: account.key } },
+                };
+            }),
+        },
+        { type: 'text', text: w.checkinHint, tone: 'muted' },
+    ];
+    return nodes;
+}
+/** 一个账号的签到状态文案（与上游 `checkinRow` 的措辞对齐，但更短）。 */
+function checkinStateText(r, today, w) {
+    if (r === undefined || r.day !== today) {
+        const last = r !== undefined && (r.outcome === 'claimed' || r.outcome === 'done') ? r.day : undefined;
+        return { text: last === undefined ? w.checkinNotYet : `${w.checkinNotYet} · ${last}`, tone: 'muted' };
+    }
+    switch (r.outcome) {
+        case 'claimed':
+        case 'done':
+            return {
+                text: [w.checkinChecked, r.credit === undefined ? undefined : `+${r.credit}`, r.streak === undefined ? undefined : `${r.streak}天`]
+                    .filter((x) => x !== undefined)
+                    .join(' · '),
+                tone: 'good',
+            };
+        case 'failed':
+            return { text: w.checkinFailed, tone: 'bad' };
+        default:
+            // ineligible / inactive / captcha / own-app：都是「这个账号今天签不了」，
+            // 手机上一句话就够了，不必逐个厂商解释（详情只在桌面上给）。
+            return { text: r.msg ?? w.checkinFailed, tone: 'warn' };
+    }
+}
+
 function quotaWindowNodes(item) {
     const windows = Array.isArray(item.windows) ? item.windows : [];
     const routable = windows.filter(win => win.aside !== true);
@@ -1928,6 +2041,7 @@ function routingTab(snapshot, w) {
  * `now` 省略时取 `Date.now()`；测试里传固定值即可复现。
  */
 export function panelData(snapshot, locale, now, ui) {
+    // ui.checkin 是宿主传下来的 {auto} —— 设置页的自动签到开关读它
     const w = words(locale);
     const stamp = isFiniteNumber(now) ? now : Date.now();
     const routing = Array.isArray(snapshot.routing) ? snapshot.routing : [];
@@ -1984,6 +2098,9 @@ export function panelData(snapshot, locale, now, ui) {
         // 设置页「显示」那几个 `chips` 的绑定根。有 `bind` 的控件 `value` 会被
         // App 改写成 `{$: bind}`（`dshUiInputBindings`），选中态完全靠这里下发，
         // 缺了它们点一下会「跳回原样」。
+        checkin: {
+            auto: ui?.checkin?.auto === true ? 'on' : 'off',
+        },
         display: {
             strip: ui?.display?.strip === false ? 'off' : 'on',
             note: ui?.display?.note === false ? 'off' : 'on',

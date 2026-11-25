@@ -95,6 +95,8 @@ let tokenDraft = { github: '', npm: '' };
  * 视图渲染与 surface 推送都读它，少了就会每次渲染都去等一次磁盘。
  */
 const DISPLAY_DEFAULTS = { strip: true, note: true, noteKind: 'tokens', models: 'group' };
+/** 自动签到开关（`settings.checkinAuto` 的镜像，面板首屏要用）。 */
+let checkinAuto = false;
 let display = { ...DISPLAY_DEFAULTS };
 /** 模型页是否打开（从设置页「浏览模型」进来，不占页签）。 */
 let modelsOpen = false;
@@ -617,6 +619,68 @@ export function apply(ctx) {
     // 的通道说明）。两条通道读的是**同一份 `latest` 快照**，不会两边不一致。
     //
     // ⚠️ 注册失败（没有 connection）只影响桌面界面，不影响聊天与手机面板。
+    // ── 签到结果（落盘） ────────────────────────────────────────────────────
+    //
+    // 上游 magpie 的界面靠"每个账号最近一次签到结果"画状态行（"Checked in today
+    // +30 · 3-day streak" / "Not eligible…" / "Auto check-in is off"）。宿主只
+    // 负责调钩子，结果本身得存下来 —— 否则重开面板就看不到今天签过没有。
+    //
+    // 形状：{ [accountKey]: { day, outcome, credit, streak, again, msg, by, vendor } }
+    // `day` 是**北京日**（上游 `wbToday()` 同样是 UTC+8 切日，厂商以此为准）。
+    const CHECKINS_FILE = join(paths.root, 'checkins.json');
+    /** 北京的"今天"：`YYYY-MM-DD`。厂商的签到日一律按 UTC+8 算。 */
+    const beijingToday = () => new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10);
+    /** 账号 key → 最近一次签到结果。 */
+    const checkinResults = new Map();
+    const checkinsReady = readFile(CHECKINS_FILE, 'utf8')
+        .then((raw) => {
+            const parsed = JSON.parse(raw);
+            if (parsed === null || typeof parsed !== 'object')
+                return;
+            for (const [key, value] of Object.entries(parsed)) {
+                if (value !== null && typeof value === 'object' && !Array.isArray(value))
+                    checkinResults.set(key, value);
+            }
+        })
+        .catch(() => { });
+    let checkinsSaving = false;
+    /** 合并写：同一时刻只排一次落盘。 */
+    const saveCheckins = () => {
+        if (checkinsSaving)
+            return;
+        checkinsSaving = true;
+        void checkinsReady.then(() => {
+            checkinsSaving = false;
+            return writeFile(CHECKINS_FILE, JSON.stringify(Object.fromEntries(checkinResults)), 'utf8');
+        }).catch(() => { checkinsSaving = false; });
+    };
+    /**
+     * 记一次签到结果。
+     *
+     * `by` 是本插件对外的"签到者标识"：插件的写成 `plugin:<id>`，与上游
+     * `checkinBy` 的取值规则一致（`app.js:18669` 的 `checkinDue` 按它分组）。
+     */
+    const recordCheckin = (provider, key, result) => {
+        if (result === undefined || result === null)
+            return;
+        const outcome = typeof result.outcome === 'string' ? result.outcome : 'failed';
+        const entry = {
+            day: beijingToday(),
+            outcome,
+            by: `plugin:${provider}`,
+            ...(result.credit === undefined ? {} : { credit: result.credit }),
+            ...(result.streak === undefined ? {} : { streak: result.streak }),
+            ...(result.again === true ? { again: true } : {}),
+            ...(typeof result.message === 'string' && result.message !== ''
+                ? { msg: result.message }
+                : typeof result.msg === 'string' && result.msg !== ''
+                    ? { msg: result.msg }
+                    : {}),
+            ...(typeof result.vendor === 'string' ? { vendor: result.vendor } : {}),
+        };
+        checkinResults.set(key, entry);
+        saveCheckins();
+    };
     // ── 自动签到（每天一次） ────────────────────────────────────────────────
     //
     // magpie 的签到是「每北京日每账号一次」，由它自己的 beat 调度。这里用最简单
@@ -650,9 +714,16 @@ export function apply(ctx) {
         checkinRunning = true;
         try {
             let claimed = 0;
+            // 设置里单独关掉的账号不签：与 `usage/checkins/off` 同一口径，
+            // 否则用户关掉的账号会被自动签到又领回去，看起来像开关失效。
+            const offList = await settings.get('checkinOffAccounts');
+            const off = new Set(Array.isArray(offList) ? offList.filter((k) => typeof k === 'string') : []);
             for (const provider of await host.signedInProviders()) {
                 for (const accountKey of await host.accountKeys(provider)) {
+                    if (off.has(accountKey))
+                        continue;
                     const result = await host.checkinOf(provider, accountKey);
+                    recordCheckin(provider, accountKey, result);
                     if (result?.outcome === 'claimed')
                         claimed += 1;
                 }
@@ -681,6 +752,7 @@ export function apply(ctx) {
     void settings.all().then((all) => {
         tokenDraft = { github: typeof all?.tokens?.github === 'string' ? all.tokens.github : '', npm: typeof all?.tokens?.npm === 'string' ? all.tokens.npm : '' };
         display = readDisplay(all?.display);
+        checkinAuto = all?.checkinAuto === true;
         market.setTokens(all?.tokens);
     }).catch(() => { });
     // ── magpie 自己的 UI（原样托管在 /magpie-hub/） ─────────────────────────
@@ -697,6 +769,55 @@ export function apply(ctx) {
         plugins,
         // 桌面 UI 的插件页要按「目录名」显示包名（`plugins/list` 用它推 name）
         moduleNameOf,
+        // 签到：桌面额度卡要读「最近一次结果」，要按账号反查平台
+        recordCheckin: (provider, key, result) => recordCheckin(provider, key, result),
+        lastCheckin: (key) => checkinResults.get(key),
+        providerOfKey: (key) => providerOfKey(key),
+        providerName: (id) => providerName(id),
+        // 设置页里关掉某个插件签到时，宿主的自动签到也要跟着关
+        setCheckinAuto: async (enabled) => { await checkinSchedule(enabled); },
+        // 用量流水（桌面「请求」页签与热力图读它）：内存里的最近 500 条调用记录
+        usageRows: () => records,
+        /**
+         * 平台自检（桌面「测试」按钮）：在某平台上真发一次最小请求。
+         *
+         * 走的是同一套 adapter，所以测的就是「DSH 现在能不能用这个平台」，
+         * 而不是另开一条与真实请求不同的路径。
+         */
+        pingProvider: async (provider, model) => {
+            const started = Date.now();
+            try {
+                // 没指定模型就用这个平台声明的第一个，避免猜错 id
+                const cfg = host.providerConfig(provider);
+                const models = cfg?.models === undefined ? [] : Object.keys(cfg.models);
+                const pick = typeof model === 'string' && model !== '' ? model : models[0];
+                if (typeof pick !== 'string' || pick === '')
+                    return { ok: false, message: '这个平台没有可用模型' };
+                let text = '';
+                for await (const chunk of adapter.stream({
+                    provider,
+                    model: pick,
+                    maxTokens: 16,
+                    messages: [{ role: 'user', content: 'ping' }],
+                })) {
+                    const piece = typeof chunk?.text === 'string' ? chunk.text : chunk?.content;
+                    if (typeof piece === 'string')
+                        text += piece;
+                }
+                return { ok: true, ms: Date.now() - started, text: text.slice(0, 60) };
+            }
+            catch (e) {
+                return { ok: false, ms: Date.now() - started, message: e instanceof Error ? e.message : String(e) };
+            }
+        },
+        // 额度卡（桌面「额度」页签）：`quotaCards` 由 ui-api 侧用快照拼，
+        // 这里只提供「逼某个平台重新问一次额度」的入口。
+        refreshQuota: async (provider) => {
+            // 只逼这个平台的账号重新问一次额度，再重建快照
+            for (const key of await host.accountKeys(provider).catch(() => []))
+                try { await host.usageOf(provider, key); } catch { /* 单个失败不挡其它 */ }
+            await refresh(true);
+        },
         // 安装/升级：与手机面板同一套逻辑（下载 → 解包 → 登记 → 重扫）
         installOne: (spec, locale, force) => installOne(spec, locale, force),
         // 磁盘上这个包的版本号（`plugins/check` 用来比最新版）
@@ -769,6 +890,7 @@ export function apply(ctx) {
                     break;
                 const id = provider === '' ? providerOfKey(key) : provider;
                 const result = await host.checkinOf(id, key);
+                recordCheckin(id, key, result);
                 if (result?.outcome === 'claimed')
                     claimed += 1;
                 else if (result?.outcome === 'done')
@@ -804,6 +926,7 @@ export function apply(ctx) {
                 plugin: focusedPlugin,
                 display,
                 models: modelsOpen,
+                checkin: { auto: checkinAuto },
             }),
             data: (_scope, emit, caps) => {
                 let last;
@@ -817,6 +940,7 @@ export function apply(ctx) {
                         update: updateStatus,
                         plugin: focusedPlugin,
                         display,
+                        checkin: { auto: checkinAuto },
                     });
                     const json = JSON.stringify(data);
                     if (json === last)
@@ -964,6 +1088,20 @@ export function apply(ctx) {
                     // 状态条与脚注立刻跟着变，不用等下一次模型调用。
                     notifySurfaces();
                     return [{ type: 'refresh', id: PANEL_ID }];
+                },
+                /**
+                 * 设置页的自动签到总开关。
+                 *
+                 * 宿主的定时器每 10 分钟看一次、距上次满 24 小时签一轮
+                 *（不用「每天 9:00」：那时进程可能没开，漏了就再没机会）。
+                 * 关掉只是不再自动签，额度卡上的「签到」按钮照样能手动签。
+                 */
+                setCheckinAuto: async (_scope, event) => {
+                    const value = event?.value?.value;
+                    await checkinSchedule(value === 'on');
+                    checkinAuto = value === 'on';
+                    void refresh().catch(() => { });
+                    return [{ type: 'toast', text: text(event?.locale, checkinAuto ? '自动签到已打开' : '自动签到已关闭', checkinAuto ? 'Auto check-in on' : 'Auto check-in off') }];
                 },
                 /** 设置页「浏览模型」：整页换成模型列表。 */
                 showModels: () => {
@@ -1118,14 +1256,21 @@ export function apply(ctx) {
                     },
                     result: async (signal) => {
                         const provider = providerArg(event);
-                        const keys = provider === '' ? await host.signedInProviders() : await host.accountKeys(provider);
+                        // 手机端详情页是**逐账号**点的（`{provider, key}`），桌面端是整
+                        // 平台一次（只有 `provider`）。给了 key 就只签那一个账号。
+                        const onlyKey = typeof event?.value?.key === 'string' ? event.value.key : '';
+                        const keys = onlyKey !== ''
+                            ? [onlyKey]
+                            : provider === '' ? await host.signedInProviders() : await host.accountKeys(provider);
                         let claimed = 0;
                         let done = 0;
                         let failed = 0;
                         for (const key of keys) {
                             if (signal.aborted)
                                 break;
-                            const result = await host.checkinOf(provider === '' ? providerOfKey(key) : provider, key);
+                            const checkinOwner = provider === '' ? providerOfKey(key) : provider;
+                            const result = await host.checkinOf(checkinOwner, key);
+                            recordCheckin(checkinOwner, key, result);
                             if (result?.outcome === 'claimed')
                                 claimed += 1;
                             else if (result?.outcome === 'done')
@@ -1347,11 +1492,25 @@ export function apply(ctx) {
                     continue;
                 const stored = await host.ensureFresh(id, key);
                 const alias = state.accountAliases[key];
+                // 签到状态：桌面 UI 的额度卡与设置页都按这三件事画
+                // （app.js:18669 checkinDue / 18567 checkinRow）——
+                // checkins 说「这个账号属于会自动签到的厂商」，checkin 是最近一次
+                // 结果，checkinOff 是「这个账号被单独排除」。
+                const canCheckin = host.declares(id, 'checkin');
+                const lastCheckin = checkinResults.get(key);
                 accounts.push({
                     key,
                     accountId: stored === undefined ? key : whoOf(stored) || key,
                     ...(typeof alias === 'string' && alias !== '' ? { alias } : {}),
                     signIn: signInOf(stored),
+                    ...(canCheckin
+                        ? {
+                            checkins: true,
+                            checkinBy: `plugin:${id}`,
+                            checkinKey: key,
+                            ...(lastCheckin === undefined ? {} : { checkin: lastCheckin }),
+                        }
+                        : {}),
                 });
             }
             providers.push({

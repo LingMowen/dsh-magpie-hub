@@ -98,6 +98,17 @@ async function listSnapshot(deps) {
                 // 账号名的真实值在详情里取；列表用 key 就够（页面显示 "signed in as …"）
                 accountId: key,
                 ...(typeof alias === 'string' && alias !== '' ? { alias } : {}),
+                // 签到字段：额度卡的签到行读它（不联网，直接取内存里最后一次结果）
+                ...(deps.host.declares(id, 'checkin')
+                    ? {
+                        checkins: true,
+                        checkinBy: `plugin:${id}`,
+                        checkinKey: key,
+                        ...(typeof deps.lastCheckin === 'function' && deps.lastCheckin(key) !== undefined
+                            ? { checkin: deps.lastCheckin(key) }
+                            : {}),
+                    }
+                    : {}),
             });
         }
         return {
@@ -121,7 +132,9 @@ async function listSnapshot(deps) {
 async function buildState(deps) {
     const { snapshot, policy, root } = deps;
     const snap = await snapshot();
-    const settings = await readMagpieSettings(root);
+    // 首屏就要带签到字段：设置页的「预热」段与额度卡的签到行都从 `settings` 读
+    // （`renderPluginCheckins` / `checkinRow`），少一个就整段不画。
+    const settings = await settingsWithCheckin(deps);
     const state = await policy.get();
 
     // magpie 的 agents = 它接入的那些外部 agent；我们这里「agent」就是供应商账号。
@@ -177,6 +190,379 @@ async function buildState(deps) {
     };
 }
 
+/** 北京的「今天」（与上游 `wbToday()` 一致：UTC+8 切日，厂商以此为准）。 */
+function beijingDay(now = Date.now()) {
+    return new Date(now + 8 * 3600_000).toISOString().slice(0, 10);
+}
+
+/**
+ * 账号清单（账号 key → `{provider, user, checkin}`）。
+ *
+ * 只读宿主已装载的东西，**不联网**：桌面额度页要秒开（48 个供应商时逐账号
+ * `ensureFresh` 会触发 token 续期，那接口要十几秒）。
+ */
+async function accountIndex(deps) {
+    const out = new Map();
+    for (const id of deps.host.providerIds()) {
+        if (!deps.host.declares(id, 'checkin'))
+            continue;
+        let keys = [];
+        try {
+            keys = await deps.host.accountKeys(id);
+        }
+        catch { keys = []; }
+        for (const key of keys) {
+            const last = typeof deps.lastCheckin === 'function' ? deps.lastCheckin(key) : undefined;
+            out.set(key, { provider: id, user: key, ...(last === undefined ? {} : { checkin: last }) });
+        }
+    }
+    return out;
+}
+
+/**
+ * 「额度卡」（`plugins/usage/page.js` 读的形状）。
+ *
+ * 页面按 `q.checkinBy` / `q.checkinKey` / `q.checkin` / `q.checkins` 画签到行，
+ * 按 `q.checkinOff` 画「这个账号被排除」，所以这五个字段必须给全。
+ * `from` 是「额度来自别处」的标记，这里恒 false。
+ */
+/**
+ * 把一次调用记录翻成 magpie ledger 的一行。
+ *
+ * 上游 `usage/requests` 的行形状很大（ttft/first/pricing/served/wire…），
+ * 页面只对**存在的**字段做渲染，缺字段不会抛。所以这里只给真实有的：
+ * 供应商、模型、账号、时间、耗时、token、费用、成败。数字缺的给 0 ——
+ * `usageSum()` 只对数字求和，给 0 等价于「没有」，不会污染合计。
+ */
+function ledgerRow(row, nameOf) {
+    const provider = typeof row.provider === 'string' ? row.provider : '';
+    const ok = row.status !== 'error';
+    const tokens = typeof row.tokens === 'number' ? row.tokens : 0;
+    const cost = typeof row.cost === 'number' ? row.cost : undefined;
+    return {
+        t: row.at,
+        provider,
+        // records 里没有显示名，从 deps.providerName 补；拿不到才退回 id
+        providerName: row.providerName ?? (typeof nameOf === 'function' ? nameOf(provider) : provider),
+        model: row.model ?? '',
+        agent: row.accountKey ?? '',
+        status: ok ? 'ok' : 'error',
+        ...(ok ? {} : { err: row.error ?? '' }),
+        ms: typeof row.ms === 'number' ? row.ms : 0,
+        // `in` 是输入 token、`out` 是输出，两个都没有时把总量放 `in`，
+        // 页面按 `in + out` 显示会翻倍，所以只在有细分时拆。
+        ...(typeof row.inputTokens === 'number' && typeof row.outputTokens === 'number'
+            ? { in: row.inputTokens, out: row.outputTokens, cache: row.cacheReadTokens ?? 0 }
+            : { in: tokens, out: 0 }),
+        tokens,
+        ...(cost === undefined ? {} : { priced: cost }),
+        // 上游用 `first` 标「这次是新会话的第一条」，我们没有这个概念
+        first: false,
+        canceled: false,
+        ...(typeof row.sessionID === 'string' && row.sessionID !== '' ? { session: row.sessionID } : {}),
+    };
+}
+
+/** 周期 → 毫秒窗（与 `index.js` 的 `windowMs` 同口径；`all` 无上限）。 */
+function windowOf(period, now = Date.now()) {
+    const day = 24 * 60 * 60_000;
+    if (period === 'today') {
+        // 「今天」按北京时间切日，与签到、面板一致
+        const shanghai = new Date(now + 8 * 3_600_000);
+        shanghai.setUTCHours(0, 0, 0, 0);
+        return now - (shanghai.getTime() - 8 * 3_600_000);
+    }
+    if (period === '7d')
+        return 7 * day;
+    if (period === '30d')
+        return 30 * day;
+    return undefined;
+}
+
+/** 北京时间 `YYYY-MM-DD`。 */
+function beijingDate(at) {
+    return new Date(at + 8 * 3_600_000).toISOString().slice(0, 10);
+}
+
+/** 把过滤条件应用到一行记录上（`usage/requests` 的 query 与面板筛选同义）。 */
+function keepRow(row, query) {
+    const pick = (k) => (typeof query.get(k) === 'string' && query.get(k) !== '' ? query.get(k) : undefined);
+    const provider = pick('provider');
+    if (provider !== undefined && row.provider !== provider)
+        return false;
+    const agent = pick('agent');
+    if (agent !== undefined && row.accountKey !== agent)
+        return false;
+    const model = pick('model');
+    if (model !== undefined && row.model !== model)
+        return false;
+    if (query.get('failed') === '1' && row.status !== 'error')
+        return false;
+    const day = pick('day');
+    if (day !== undefined && beijingDate(row.at) !== day)
+        return false;
+    const q = pick('q');
+    if (q !== undefined) {
+        const needle = q.toLowerCase();
+        const hay = `${row.provider ?? ''} ${row.model ?? ''} ${row.accountKey ?? ''}`.toLowerCase();
+        if (!hay.includes(needle))
+            return false;
+    }
+    return true;
+}
+
+/**
+ * 从 `deps.usageRows()` 取行并压成 ledger。
+ *
+ * `deps.usageRows` 由 `index.js` 提供（读的是 adapter 写进去的 `records`），
+ * 拿不到就当空 —— 页面会显示「这个时段没有请求」，而不是报错。
+ */
+function ledgerOf(deps, query) {
+    const all = typeof deps.usageRows === 'function' ? deps.usageRows() : [];
+    const rows = Array.isArray(all) ? all : [];
+    const period = query.get('period') ?? 'today';
+    const span = windowOf(period);
+    const now = Date.now();
+    const from = span === undefined ? undefined : now - span;
+    const kept = rows
+        .filter((r) => (from === undefined ? true : (typeof r.at === 'number' && r.at >= from)))
+        .filter((r) => keepRow(r, query));
+    // 按时间从新到旧（页面把第一页当「最近」）
+    kept.sort((a, b) => (typeof b.at === 'number' ? b.at : 0) - (typeof a.at === 'number' ? a.at : 0));
+    const offset = Number.parseInt(query.get('offset') ?? '0', 10) || 0;
+    const limitRaw = Number.parseInt(query.get('limit') ?? '100', 10) || 100;
+    const limit = Math.max(1, Math.min(500, limitRaw));
+    const page = kept.slice(offset, offset + limit);
+    let tokens = 0;
+    let calls = 0;
+    let errors = 0;
+    let cost = 0;
+    let unpriced = 0;
+    // 表头合计分四列（`page.js:1617` 读 `l.input` / `l.output` /
+    // `l.cache_read` / `l.cache_write`），少一个就是 NaN。
+    let input = 0;
+    let output = 0;
+    let cacheRead = 0;
+    let cacheWrite = 0;
+    for (const r of kept) {
+        calls += 1;
+        tokens += typeof r.tokens === 'number' ? r.tokens : 0;
+        input += typeof r.inputTokens === 'number' ? r.inputTokens : 0;
+        output += typeof r.outputTokens === 'number' ? r.outputTokens : 0;
+        cacheRead += typeof r.cacheReadTokens === 'number' ? r.cacheReadTokens : 0;
+        cacheWrite += typeof r.cacheWriteTokens === 'number' ? r.cacheWriteTokens : 0;
+        if (r.status === 'error')
+            errors += 1;
+        if (typeof r.cost === 'number')
+            cost += r.cost;
+        else
+            unpriced += 1;
+    }
+    return {
+        rows: page.map((r) => ledgerRow(r, deps.providerName)),
+        total: kept.length,
+        offset,
+        calls,
+        errors,
+        tokens,
+        input,
+        output,
+        // 页面的键名是下划线（magpie 的 JSON 风格），不是驼峰
+        cache_read: cacheRead,
+        cache_write: cacheWrite,
+        cost,
+        unpriced,
+        // 页面按 `series` 画折线：`{label, tokens, calls, cost, by}`，
+        // `by` 的键是「按什么分」（agent/provider/model），值是该键的数值。
+        series: ledgerSeries(kept, period),
+        chartBy: 'provider',
+        day: period === 'today' ? beijingDate(now) : undefined,
+        // 这些是上游有的分面计数；我们没有对应概念，给空数组让页面不画筛选行。
+        agents: [],
+        callerKeys: [],
+    };
+}
+
+/** 把记录按时间桶聚成折线序列（今天按小时，其余按天）。 */
+function ledgerSeries(rows, period) {
+    const hourly = period === 'today';
+    const buckets = new Map();
+    for (const r of rows) {
+        const d = new Date((typeof r.at === 'number' ? r.at : 0) + 8 * 3_600_000);
+        const label = hourly
+            ? `${String(d.getUTCHours()).padStart(2, '0')}:00`
+            : `${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+        const bucket = buckets.get(label) ?? { tokens: 0, calls: 0, cost: 0, by: {} };
+        const tokens = typeof r.tokens === 'number' ? r.tokens : 0;
+        bucket.tokens += tokens;
+        bucket.calls += 1;
+        bucket.cost += typeof r.cost === 'number' ? r.cost : 0;
+        const key = typeof r.provider === 'string' ? r.provider : '';
+        bucket.by[key] = (bucket.by[key] ?? 0) + tokens;
+        buckets.set(label, bucket);
+    }
+    return [...buckets.entries()]
+        .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+        .map(([label, b]) => ({ label, tokens: b.tokens, calls: b.calls, cost: b.cost, by: b.by }));
+}
+
+/**
+ * 热力图：`{from, to, days:[{date, calls, tokens, cost}]}`。
+ *
+ * 页面用 `from`/`to` 建日历网格、用 `days` 填格子，**日期必须连续**
+ * （它自己会补齐缺的日期，所以这里只给有数据的天也行；但给全更省事）。
+ */
+function heatmapOf(deps, query) {
+    const all = typeof deps.usageRows === 'function' ? deps.usageRows() : [];
+    const rows = Array.isArray(all) ? all : [];
+    const now = Date.now();
+    const byDay = new Map();
+    for (const r of rows) {
+        if (typeof r.at !== 'number')
+            continue;
+        const date = beijingDate(r.at);
+        const cell = byDay.get(date) ?? { date, calls: 0, tokens: 0, cost: 0 };
+        cell.calls += 1;
+        cell.tokens += typeof r.tokens === 'number' ? r.tokens : 0;
+        cell.cost += typeof r.cost === 'number' ? r.cost : 0;
+        byDay.set(date, cell);
+    }
+    // 窗口与请求里的 period 无关：热力图固定看最近 90 天（上游也是固定一段）
+    const days = 90;
+    const to = beijingDate(now);
+    const from = beijingDate(now - (days - 1) * 24 * 60 * 60_000);
+    const out = [];
+    for (let i = 0; i < days; i += 1) {
+        const date = beijingDate(now - (days - 1 - i) * 24 * 60 * 60_000);
+        out.push(byDay.get(date) ?? { date, calls: 0, tokens: 0, cost: 0 });
+    }
+    void query;
+    return { from, to, days: out };
+}
+
+/**
+ * `usage/arrange` 的写入口：把页面传来的排布/隐藏/归并偏好写进 magpie 的
+ * `settings.json`，再回这几个键的最新值。
+ *
+ * 页面每次写完都用返回值覆盖自己的 `state.settings`，所以**必须回全**这几个
+ * 键（哪怕这次没改），否则刚设的值会被 `undefined` 冲掉。
+ */
+async function arrangeUsage(deps, body) {
+    const root = deps.root;
+    const file = join(root, 'settings.json');
+    let prefs = {};
+    try {
+        const raw = JSON.parse(await readFile(file, 'utf8'));
+        if (typeof raw === 'object' && raw !== null)
+            prefs = raw;
+    }
+    catch {
+        // 没有 settings.json：从空开始
+    }
+    if (Array.isArray(body?.order))
+        prefs.usageOrder = body.order.filter((k) => typeof k === 'string');
+    if (Array.isArray(body?.panelHidden))
+        prefs.panelUsageHidden = body.panelHidden.filter((k) => typeof k === 'string');
+    if (Array.isArray(body?.agentsHidden))
+        prefs.usageAgentsHidden = body.agentsHidden.filter((k) => typeof k === 'string');
+    if (typeof body?.count === 'object' && body.count !== null) {
+        const { client, as } = body.count;
+        if (typeof client === 'string') {
+            const table = typeof prefs.clientAgents === 'object' && prefs.clientAgents !== null ? { ...prefs.clientAgents } : {};
+            if (typeof as === 'string' && as !== '')
+                table[client] = as;
+            else
+                delete table[client];
+            prefs.clientAgents = table;
+        }
+    }
+    await writeAtomic(file, prefs);
+    return {
+        usageOrder: Array.isArray(prefs.usageOrder) ? prefs.usageOrder : [],
+        panelUsageHidden: Array.isArray(prefs.panelUsageHidden) ? prefs.panelUsageHidden : [],
+        usageAgentsHidden: Array.isArray(prefs.usageAgentsHidden) ? prefs.usageAgentsHidden : [],
+        clientAgents: typeof prefs.clientAgents === 'object' && prefs.clientAgents !== null ? prefs.clientAgents : {},
+    };
+}
+async function checkinCards(deps) {
+    const idx = await accountIndex(deps);
+    const prefs = await readMagpieSettings(deps.root);
+    const off = Array.isArray(prefs?.checkinOffAccounts) ? prefs.checkinOffAccounts : [];
+    const today = beijingDay();
+    const cards = [];
+    for (const [key, info] of idx) {
+        const r = info.checkin;
+        // 与上游 `checkinDue`（app.js:18669）同义：今天已经有结果、且不是
+        // failed、且不是「again」（厂商日还没翻）就算签过了。
+        const due = !(r !== undefined && r.day === today && r.outcome !== 'failed' && r.again !== true && r.outcome !== 'inactive');
+        cards.push({
+            key,
+            accountId: key,
+            user: info.user,
+            checkins: true,
+            checkinBy: `plugin:${info.provider}`,
+            checkinKey: key,
+            checkinOff: off.includes(key),
+            checkinDue: due,
+            ...(r === undefined ? {} : { checkin: r }),
+            from: false,
+        });
+    }
+    return cards;
+}
+
+/**
+ * 把签到相关字段并进 settings 响应。
+ *
+ * 桌面设置页的「预热」段与额度卡的签到行都从 `state.settings` 读，形状见
+ * `renderPluginCheckins`（app.js:22947）：
+ *   checkinPlugins  [{id, name, on, checkins:[{user, day, outcome, credit, streak, again, by}]}]
+ *   checkinAccounts [{key, by, user, on}]
+ *   checkinAt       "" | "HH:MM"（空串＝每个厂商日一到就签）
+ */
+async function settingsWithCheckin(deps, prefs) {
+    const raw = prefs === undefined ? await readMagpieSettings(deps.root) : prefs;
+    const idx = await accountIndex(deps);
+    const globalOn = raw?.pluginCheckins !== null && typeof raw?.pluginCheckins === 'object' && !Array.isArray(raw.pluginCheckins)
+        ? raw.pluginCheckins
+        : {};
+    const off = Array.isArray(raw?.checkinOffAccounts) ? raw.checkinOffAccounts : [];
+
+    // 每个「会签到」的插件一行
+    const byProvider = new Map();
+    for (const [key, info] of idx) {
+        const rows = byProvider.get(info.provider) ?? [];
+        rows.push({ key, user: info.user, checkin: info.checkin });
+        byProvider.set(info.provider, rows);
+    }
+    const checkinPlugins = [...byProvider].map(([id, rows]) => ({
+        id,
+        name: typeof deps.providerName === 'function' ? deps.providerName(id) : id,
+        on: globalOn[id] === true,
+        checkins: rows
+            .filter((row) => row.checkin !== undefined)
+            .map((row) => ({
+                user: row.user,
+                ...row.checkin,
+                by: row.checkin?.by ?? `plugin:${id}`,
+            })),
+    }));
+
+    const checkinAccounts = [...idx].map(([key, info]) => ({
+        key,
+        by: `plugin:${info.provider}`,
+        user: info.user,
+        on: !off.includes(key),
+    }));
+
+    return {
+        ...raw,
+        checkinPlugins,
+        checkinAccounts,
+        checkinAt: typeof raw?.checkinAt === 'string' ? raw.checkinAt : '',
+    };
+}
+
 /**
  * 造一组处理器。
  *
@@ -184,6 +570,51 @@ async function buildState(deps) {
  *              market, root, log }`
  * @returns `{ '<路径>': (req, body) => 响应对象 }`
  */
+/**
+ * 额度卡数组（`usage/quotas` 的返回形状）。
+ *
+ * 页面用到的字段（`renderQuotas`，app.js:15600–16560）：`provider`（平台 id）、
+ * `user`、`plan`、`balance`、`windows`（`[{name, used, limit, amount, unit, resetsAt,
+ * display}]`）、`error`、`checkins`/`checkinBy`/`checkinKey`/`checkin`/`checkinOff`。
+ * 全靠 `snapshot()` 里的 `usage` 拼 —— 那是宿主已经按账号问过 `auth.usage` 的结果。
+ */
+async function quotaCards(deps) {
+    const snap = await deps.snapshot();
+    const prefs = await readMagpieSettings(deps.root);
+    const off = Array.isArray(prefs?.checkinOffAccounts) ? prefs.checkinOffAccounts : [];
+    const today = beijingDay();
+    const cards = [];
+    for (const item of Array.isArray(snap?.usage) ? snap.usage : []) {
+        const provider = typeof item.provider === 'string' ? item.provider : '';
+        const key = typeof item.accountKey === 'string' ? item.accountKey : '';
+        const r = typeof deps.lastCheckin === 'function' ? deps.lastCheckin(key) : undefined;
+        const due = !(r !== undefined && r.day === today && r.outcome !== 'failed' && r.again !== true && r.outcome !== 'inactive');
+        const canCheckin = typeof deps.host?.declares === 'function' ? deps.host.declares(provider, 'checkin') : false;
+        cards.push({
+            key,
+            provider,
+            providerName: typeof deps.providerName === 'function' ? deps.providerName(provider) : provider,
+            user: typeof item.user === 'string' ? item.user : key,
+            ...(typeof item.plan === 'string' ? { plan: item.plan } : {}),
+            ...(item.balance === undefined ? {} : { balance: item.balance }),
+            ...(item.until === undefined ? {} : { until: item.until }),
+            windows: Array.isArray(item.windows) ? item.windows : [],
+            ...(typeof item.error === 'string' ? { error: item.error } : {}),
+            ...(canCheckin
+                ? {
+                    checkins: true,
+                    checkinBy: `plugin:${provider}`,
+                    checkinKey: key,
+                    checkinOff: off.includes(key),
+                    checkinDue: due,
+                    ...(r === undefined ? {} : { checkin: r }),
+                }
+                : {}),
+            from: false,
+        });
+    }
+    return cards;
+}
 export function makeUiHandlers(deps) {
     const handlers = {
         /** 页面第一屏。 */
@@ -204,6 +635,9 @@ export function makeUiHandlers(deps) {
             // 而 UI 的供应商列表**不需要额度**——直接用宿主拿列表，秒出。
             // 额度在详情弹窗里按需取（`provider/balance`）。
             const snap = await listSnapshot(deps);
+            // 「被单独排除出每日签到」的账号（设置页里逐账号关掉的）
+            const prefs0 = await readMagpieSettings(deps.root);
+            const offAccounts = Array.isArray(prefs0?.checkinOffAccounts) ? prefs0.checkinOffAccounts : [];
             const policy = await deps.policy.get();
             return {
                 providers: await Promise.all(snap.providers.map(async (p) => ({
@@ -254,6 +688,18 @@ export function makeUiHandlers(deps) {
                         ...(a.plan === undefined ? {} : { plan: a.plan }),
                         ...(a.until === undefined ? {} : { until: a.until }),
                         ...(a.signIn === undefined ? {} : { signIn: a.signIn }),
+                        // 签到：额度卡的每一行按这四个字段决定画什么
+                        // （app.js:18669 checkinDue / 18567 checkinRow）
+                        ...(a.checkins === true
+                            ? {
+                                checkins: true,
+                                checkinBy: a.checkinBy,
+                                checkinKey: a.checkinKey,
+                                checkinOff: offAccounts.includes(a.key),
+                                ...(a.checkin === undefined ? {} : { checkin: a.checkin }),
+                            }
+                            : {}),
+                        from: false,
                     })),
                     // ⚠ `models` 必须是**数组**：renderProviders 里直接
                     // `p.models.filter((m) => m.on).length`（app.js:6211），
@@ -424,7 +870,7 @@ export function makeUiHandlers(deps) {
          * 这里采集额度——那是手机面板的 `latest.usage`——回空数组即「还没有
          * 额度数据」，页面显示空态。
          */
-        'usage/quotas': async () => [],
+        'usage/quotas': async () => quotaCards(deps),
         /**
          * 额度的历史曲线（`?days=45`）。页面把结果整体 `JSON.stringify` 比较，
          * 回空对象即可，曲线区不画。
@@ -634,12 +1080,139 @@ export function makeUiHandlers(deps) {
         settings: async (_req, body) => {
             const current = await readMagpieSettings(deps.root);
             const isWrite = body !== undefined && body !== null && typeof body === 'object' && !Array.isArray(body);
+            // 读与写都过 `settingsWithCheckin`：页面把返回值直接当 `prefs` 用，
+            // 少了签到三件套，设置页的「预热」段就整段不画。
             if (!isWrite)
-                return current;
+                return settingsWithCheckin(deps, current);
             const next = { ...current, ...body };
             await writeAtomic(join(deps.root, 'settings.json'), next);
-            return next;
+            return settingsWithCheckin(deps, next);
         },
+        /**
+         * 每日签到：每个「自己会签到」的插件一行的开关（Settings › 预热）。
+         *
+         * 契约（`app.js:22494`）：`{provider, on}` 进来，回**合并后的完整 prefs** ——
+         * 前端直接 `prefs = await writingPrefs(api(...))` 再拿它重画，所以不能只回
+         * `{ok:true}`。开关本身落在 magpie `settings.json` 的 `pluginCheckins` 里，
+         * 形状 `{[pluginId]: boolean}`（与上游一致）。
+         */
+        'settings/plugin-checkin': async (_req, body) => {
+            const cur = await readMagpieSettings(deps.root);
+            const provider = typeof body?.provider === 'string' ? body.provider : '';
+            if (provider === '')
+                throw new Error('缺少 provider');
+            const on = body?.on === true;
+            const map = cur?.pluginCheckins !== null && typeof cur?.pluginCheckins === 'object' && !Array.isArray(cur.pluginCheckins)
+                ? { ...cur.pluginCheckins }
+                : {};
+            map[provider] = on;
+            const next = { ...cur, pluginCheckins: map };
+            await writeAtomic(join(deps.root, 'settings.json'), next);
+            // 开关一变，宿主的自动签到也该跟着走（它读的是插件自己的 settings）
+            if (typeof deps.setCheckinAuto === 'function')
+                await deps.setCheckinAuto(on).catch(() => { });
+            return settingsWithCheckin(deps, next);
+        },
+        /**
+         * 单个账号要不要参与每日签到（Settings 里每个平台下 ≥2 个账号才画这一行）。
+         *
+         * 契约（`app.js:22528`）：`{key, on}` 进来，同样回完整 prefs。
+         * 存储形状 `checkinOffAccounts: [accountKey]`（存「被排除的」，这样新账号
+         * 默认参与，不会因为忘记录入而静悄悄不签到）。
+         */
+        'settings/checkin-account': async (_req, body) => {
+            const cur = await readMagpieSettings(deps.root);
+            const key = typeof body?.key === 'string' ? body.key : '';
+            if (key === '')
+                throw new Error('缺少 key');
+            const off = Array.isArray(cur?.checkinOffAccounts) ? cur.checkinOffAccounts.filter((k) => typeof k === 'string') : [];
+            const on = body?.on === true;
+            const nextOff = on ? off.filter((k) => k !== key) : (off.includes(key) ? off : [...off, key]);
+            const next = { ...cur, checkinOffAccounts: nextOff };
+            await writeAtomic(join(deps.root, 'settings.json'), next);
+            return settingsWithCheckin(deps, next);
+        },
+        /**
+         * 立刻给一个账号签一次（额度卡的「立刻签到」与「全部签到」都用它）。
+         *
+         * 契约（`checkinnow.js` 的 `ciNowSend` → `api("usage/checkin-account", {by, key})`）：
+         * 回**单个**结果对象 `{outcome, day, credit, streak, again, msg, asked, by}`，
+         * 不动任何开关。页面用它把按钮状态就地改成结果文案。
+         */
+        'usage/checkin-account': async (_req, body) => {
+            const key = typeof body?.key === 'string' ? body.key : '';
+            if (key === '')
+                throw new Error('缺少 key');
+            const provider = typeof deps.providerOfKey === 'function' ? deps.providerOfKey(key) : '';
+            if (provider === '')
+                throw new Error('这个账号不属于任何平台');
+            const result = await deps.host.checkinOf(provider, key);
+            if (result === undefined)
+                throw new Error('这个平台不支持签到');
+            // 结果要落进快照，额度卡的下一屏才显示得出来
+            if (typeof deps.recordCheckin === 'function')
+                deps.recordCheckin(provider, key, result);
+            const outcome = typeof result.outcome === 'string' ? result.outcome : 'failed';
+            return {
+                outcome,
+                by: `plugin:${provider}`,
+                asked: true,
+                ...(typeof result.credit === 'undefined' ? {} : { credit: result.credit }),
+                ...(typeof result.streak === 'undefined' ? {} : { streak: result.streak }),
+                ...(result.again === true ? { again: true } : {}),
+                ...(typeof result.message === 'string' && result.message !== '' ? { msg: result.message } : {}),
+            };
+        },
+        /** 额度卡里「还没签到」的那批（「全部签到」按钮据此显示）。 */
+        // 只给「该签但还没签」的：被单独排除的账号不能进「全部签到」的批次，
+        // 否则设置里关掉的那个会被这一下签回来（与上游 checkinDue 的语义一致）。
+        'usage/checkins/off': async () => (await checkinCards(deps)).filter((q) => q.checkins === true && q.checkinDue === true && q.checkinOff !== true),
+        // ── usage/requests：请求流水（页面「请求」页签）────────────────────
+        // 上游返回的是**一页**行 + 该时段的合计，页面自己分页。
+        'usage/requests': async (req) => {
+            const query = new URL(req.url ?? '/', 'http://127.0.0.1').searchParams;
+            return ledgerOf(deps, query);
+        },
+        // ── usage/heatmap：最近 90 天的每日用量 ───────────────────────────
+        'usage/heatmap': async (req) => {
+            const query = new URL(req.url ?? '/', 'http://127.0.0.1').searchParams;
+            return heatmapOf(deps, query);
+        },
+        // ── usage/arrange：额度卡的排布/隐藏/客户端归并 ────────────────────
+        'usage/arrange': async (_req, body) => arrangeUsage(deps, body ?? {}),
+        // ── usage/quotas/refresh：重新读某个平台的额度 ────────────────────
+        'usage/quotas/refresh': async (_req, body) => {
+            const provider = typeof body?.provider === 'string' ? body.provider : '';
+            if (provider !== '' && typeof deps.refreshQuota === 'function')
+                await deps.refreshQuota(provider).catch(() => { });
+            // 页面拿返回值整体替换额度卡数组
+            return typeof deps.quotaCards === 'function' ? await deps.quotaCards() : [];
+        },
+        // ── usage/quotas/history/holds：额度历史的「冻结」记录 ────────────
+        // 上游用它画「什么时候到过上限」。我们的历史是 `usage/quotas/history`
+        // 那份 `{}` 里的内容（没有），所以这里回空数组 —— 页面按空处理不画。
+        'usage/quotas/history/holds': async () => [],
+        // ── usage/codex-reset：用掉一次重置机会 ──────────────────────────
+        // DSH 里没有「厂商重置配额」这个动作（那是 magpie 对 Codex 的专门支持），
+        // 按钮点了要给明确答复，而不是 501 让页面挂红条。
+        'usage/codex-reset': async () => {
+            throw new Error('这里没有「重置配额」：本插件只代理请求，不代你操作厂商账户');
+        },
+        // ── tune：上下文调优建议（页面「上下文」页签的上半）──────────────
+        // 上游按 agent 统计「哪个旋钮该调」。我们没有旋钮，回空列表 ->
+        // 页面自己会显示「这个范围里调用太少，给不出建议」。
+        tune: async (req) => {
+            const query = new URL(req.url ?? '/', 'http://127.0.0.1').searchParams;
+            const days = Number.parseInt(query.get('days') ?? '7', 10) || 7;
+            return { days, agents: [] };
+        },
+        // ── context：上下文占用（页面「上下文」页签的下半）───────────────
+        context: async (req) => {
+            const query = new URL(req.url ?? '/', 'http://127.0.0.1').searchParams;
+            const days = Number.parseInt(query.get('days') ?? '7', 10) || 7;
+            return { days, agents: [], series: [] };
+        },
+
         /**
          * 「会话历史读取」的两个开关（Settings › 隐私）。
          *
@@ -744,5 +1317,105 @@ export function makeUiHandlers(deps) {
             return { routing: snap.routing, strategy: await deps.policy.strategy() };
         },
     };
+    // ── 平台编辑相关（`provider/*`）──────────────────────────────────────
+    //
+    // 这几个端点都用 `handlers.providers()` 收尾：页面拿返回值**整体替换**
+    // 自己的 `providers`，形状必须与 `providers` 端点一致。
+    Object.assign(handlers, {
+        /** 账号顺序（平台详情的拖拽）。 */
+        'provider/arrange': async (_req, body) => {
+            const id = typeof body?.id === 'string' ? body.id : '';
+            const order = Array.isArray(body?.accountOrder)
+                ? body.accountOrder.filter((k) => typeof k === 'string')
+                : null;
+            if (id !== '' && order !== null) {
+                const prefs = await readMagpieSettings(deps.root);
+                const table = typeof prefs.accountOrder === 'object' && prefs.accountOrder !== null
+                    ? { ...prefs.accountOrder }
+                    : {};
+                table[id] = order;
+                await writeAtomic(join(deps.root, 'settings.json'), { ...prefs, accountOrder: table });
+            }
+            return await handlers.providers();
+        },
+        /** 调换平台顺序 / 改它的模型清单。 */
+        'provider/move': async (_req, body) => {
+            const id = typeof body?.id === 'string' ? body.id : '';
+            const prefs = await readMagpieSettings(deps.root);
+            let dirty = false;
+            if (id !== '' && typeof body?.order === 'string') {
+                const cur = Array.isArray(prefs.providerOrder)
+                    ? prefs.providerOrder.filter((x) => typeof x === 'string')
+                    : [];
+                const rest = cur.filter((x) => x !== id);
+                // `order` 是「排到哪个 id 之后」，空串＝最前
+                const at = body.order === '' ? 0 : rest.indexOf(body.order) + 1;
+                rest.splice(at < 0 ? rest.length : at, 0, id);
+                prefs.providerOrder = rest;
+                dirty = true;
+            }
+            if (id !== '' && Array.isArray(body?.models)) {
+                const table = typeof prefs.providerModels === 'object' && prefs.providerModels !== null
+                    ? { ...prefs.providerModels }
+                    : {};
+                table[id] = body.models.filter((m) => typeof m === 'string');
+                prefs.providerModels = table;
+                dirty = true;
+            }
+            if (dirty)
+                await writeAtomic(join(deps.root, 'settings.json'), prefs);
+            return await handlers.providers();
+        },
+        /** 清掉「从厂商拉的模型清单」缓存（我们记在 `providerModels[id]`）。 */
+        'provider/unfetch': async (_req, body) => {
+            const id = typeof body?.id === 'string' ? body.id : '';
+            if (id !== '') {
+                const prefs = await readMagpieSettings(deps.root);
+                if (prefs.providerModels && typeof prefs.providerModels === 'object' && id in prefs.providerModels) {
+                    const table = { ...prefs.providerModels };
+                    delete table[id];
+                    await writeAtomic(join(deps.root, 'settings.json'), { ...prefs, providerModels: table });
+                }
+            }
+            return await handlers.providers();
+        },
+        /**
+         * 这个账号的 key 自己能列出的模型。
+         *
+         * 上游问厂商的 `/models`。插件没有通用的「列模型」钩子，所以如实回
+         * `{known:false, models:[]}`；页面据此退回「把已显示的模型全选」
+         * （`app.js:14533` 对 null 直接 return，不会挂红条）。
+         */
+        'provider/keylisted': async () => ({ known: false, models: [] }),
+        /**
+         * 在某个平台上真发一次请求（页面「测试」按钮）。
+         *
+         * 上游用 SSE 回进度条；页面同时接受一次性 JSON（`app.js:11062` 读
+         * `r.results`）。这里做一次最小非流式调用：成功回 ok，失败带上原因。
+         */
+        'provider/test': async (_req, body) => {
+            const id = typeof body?.id === 'string' ? body.id : '';
+            const model = typeof body?.model === 'string' ? body.model : '';
+            if (id === '')
+                throw new Error('缺少平台 id');
+            if (typeof deps.pingProvider !== 'function')
+                return { ok: false, results: [{ ok: false, model, message: '这个版本不支持在线自检' }] };
+            const r = await deps.pingProvider(id, model);
+            return { ok: r?.ok === true, results: [{ ...r, model }] };
+        },
+        /** 中止自检（我们是一次性请求，没有可中止的流）。 */
+        'provider/teststop': async () => ({ ok: true }),
+        /**
+         * 按四种 API 形状试 base URL。
+         *
+         * 上游逐个发最小请求看哪种通。我们对插件没有通用探测能力，如实回空
+         * `results` —— 页面会显示「None answered: check the URL and the key」，
+         * 比 501 挂红条好。
+         */
+        'provider/detect': async (_req, body) => ({
+            results: [],
+            base: typeof body?.base === 'string' ? body.base : '',
+        }),
+    });
     return handlers;
 }

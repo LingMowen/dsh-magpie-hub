@@ -6,7 +6,7 @@
 
 | | |
 |---|---|
-| 版本 | 0.2.6 |
+| 版本 | 0.2.7 |
 | 运行环境 | Node `^22.19.0 \|\| >=24.0.0` |
 | 形态 | 纯 ESM，无可编译步骤 |
 | 许可 | AGPL-3.0-only |
@@ -41,14 +41,14 @@ cd ~/.dsh/profiles/web
 npm i dsh-magpie-hub
 
 # 或者用本地打包的 tgz
-npm i /path/to/dsh-magpie-hub-0.2.6.tgz
+npm i /path/to/dsh-magpie-hub-0.2.7.tgz
 ```
 
 然后在 profile 的 `package.json` 里把本包加进 bundle 列表：
 
 ```json
 {
-  "dependencies": { "dsh-magpie-hub": "0.2.6" },
+  "dependencies": { "dsh-magpie-hub": "0.2.7" },
   "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "dsh-magpie-hub"] } }
 }
 ```
@@ -107,10 +107,11 @@ npm i /path/to/dsh-magpie-hub-0.2.6.tgz
   Go 与 Node 两边互相封印/解封都验过；
 - 手机上够不到 `/sdcard`（面板没有文件选择器节点，插件又跑在 proot 里），所以不走文件、走网络：
   电脑在同一个插件里封一份，手机取回来再解封；
-- 电脑地址填**带 token 的完整链接**（电脑上打开面板后地址栏那一串），填过一次会记住，口令不存。
+- 电脑地址填 `IP:端口`（如 `192.168.1.10:5443`），访问令牌填电脑上面板地址栏里 `token=` 后面那串。
+  整行粘进地址框也能用，会自动拆开。地址填过一次会记住；**令牌与口令都不落盘**，只留在内存里。
 
 > DSH 只接自己 `--host` 绑的那个地址，`--host 0.0.0.0` 会被直接拒绝。要让手机连上，电脑端得用
-> `--host 192.168.x.x` 启动，手机填 `http://192.168.x.x:<端口>/?token=…`。
+> `--host 192.168.x.x` 启动，手机填 `192.168.x.x:<端口>`，令牌从电脑地址栏里取。
 
 ---
 

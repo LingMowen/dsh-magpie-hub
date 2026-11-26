@@ -603,14 +603,14 @@ test('今天已签的账号不再进批量入口', () => {
     assert.ok(visibleTexts(view).some((t) => t.includes('今天已签')), '状态要显示已签');
 });
 
-test('账号备份页：一个表单两项输入，返回设置', () => {
+test('账号备份页：一个表单三项输入，返回设置', () => {
     const view = panelView(snapshot(), { locale: 'zh' }, { page: 'settings', backup: true });
     const nodes = flatten(view);
     const forms = nodes.filter((n) => n.type === 'form');
-    assert.equal(forms.length, 1, '只有一个表单：地址 + 口令一起提交');
+    assert.equal(forms.length, 1, '只有一个表单：地址 + 令牌 + 口令一起提交');
     assert.equal(forms[0].submit, 'importFromHost');
     const inputs = nodes.filter((n) => n.type === 'textField');
-    assert.deepEqual(inputs.map((i) => i.bind), ['data.backup.host', 'data.backup.pass'], '口令与地址各有自己的绑定根');
+    assert.deepEqual(inputs.map((i) => i.bind), ['data.backup.host', 'data.backup.token', 'data.backup.pass'], '地址、令牌、口令各有自己的绑定根，令牌单独一栏才不用整行粘贴');
     assert.ok(inputs.every((i) => typeof i.label === 'string' && i.label !== ''), 'App 要求 label 必填');
     const rows = nodes.filter((n) => n.type === 'list').flatMap((n) => n.items);
     assert.ok(rows.some((r) => r.action === 'closeBackup'), '要能退回设置');
@@ -625,9 +625,11 @@ test('账号备份页：设置页有入口，且 data 里给出绑定根', async
     // `{$: bind}`，初值只能靠这里下发。
     const data = panelData(snapshot(), 'zh', 0, { backupHost: '192.168.1.10:5443', backupStatus: '正在取备份…' });
     assert.equal(data.backup.host, '192.168.1.10:5443');
+    assert.equal(data.backup.token, '', '令牌不回显：它是这台电脑的访问凭据，不进面板数据');
     assert.equal(data.backup.pass, '', '口令不回显：每一帧都吐明文等于把口令留在内存里');
     assert.equal(data.backup.status, '正在取备份…');
     const blank = panelData(snapshot(), 'zh', 0, {});
     assert.equal(blank.backup.host, '');
+    assert.equal(blank.backup.token, '');
     assert.equal(blank.backup.status, '');
 });

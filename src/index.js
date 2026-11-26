@@ -763,9 +763,13 @@ export function apply(ctx) {
     void settings.all().then((all) => {
         tokenDraft = { github: typeof all?.tokens?.github === 'string' ? all.tokens.github : '', npm: typeof all?.tokens?.npm === 'string' ? all.tokens.npm : '' };
         display = readDisplay(all?.display);
-        // 地址记下来（口令不记）：那串带 token 的链接有七十来个字符，
-        // 手机上每次重打一遍不现实。
-        backupHost = typeof all?.backup?.host === 'string' ? all.backup.host : '';
+        // 地址记 host:port，令牌与口令都不落盘。
+        // 老版本把整行地址（含令牌）写进过磁盘：内存里剥掉，磁盘上也顺手
+        // 清掉 —— 不然明文会一直躺在那儿。
+        const savedHost = typeof all?.backup?.host === 'string' ? all.backup.host : '';
+        backupHost = hostOnly(savedHost);
+        if (savedHost !== '' && savedHost !== backupHost)
+            void settings.set('backup', { host: backupHost }).catch(() => { });
         checkinAuto = all?.checkinAuto === true;
         market.setTokens(all?.tokens);
     }).catch(() => { });
@@ -1157,8 +1161,9 @@ export function apply(ctx) {
                 importFromHost: (_scope, event) => {
                     const values = event?.value?.values ?? {};
                     const host = typeof values['data.backup.host'] === 'string' ? values['data.backup.host'].trim() : '';
+                    const token = typeof values['data.backup.token'] === 'string' ? values['data.backup.token'].trim() : '';
                     const pass = typeof values['data.backup.pass'] === 'string' ? values['data.backup.pass'] : '';
-                    return startImportFromHost(host, pass, event?.locale);
+                    return startImportFromHost(host, token, pass, event?.locale);
                 },
                 /** 点放大镜图标：把搜索框展开。 */
                 openSearch: () => {
@@ -1848,10 +1853,28 @@ export function apply(ctx) {
      * DSH 对 `/magpie-hub/` 只认 cookie 不认裸 token，所以先拿 token 换 cookie，
      * 再带着 cookie 发请求。地址没写协议就补 `http://`。
      */
-    function startImportFromHost(host, pass, locale) {
+    /**
+     * 只留 `host:port`。
+     *
+     * 落盘的地址里不能带 `token=`：令牌就是这台电脑的访问凭据，写进
+     * `hub-settings.json` 等于明文存密码。整行粘贴的用法照样支持 —— 解析完
+     * 在写盘这一步把它剥掉。
+     */
+    function hostOnly(raw) {
+        const at = typeof raw === 'string' ? raw.trim() : '';
+        if (at === '')
+            return '';
+        try {
+            return new URL(/^https?:\/\//i.test(at) ? at : `http://${at}`).host;
+        }
+        catch {
+            return at;
+        }
+    }
+    function startImportFromHost(host, tokenIn, pass, locale) {
         const at = typeof host === 'string' ? host.trim() : '';
         if (at === '')
-            return [{ type: 'toast', text: text(locale, '先填电脑地址，形如 192.168.1.10:5443/?token=…', 'Fill the address first, like 192.168.1.10:5443/?token=…') }];
+            return [{ type: 'toast', text: text(locale, '先填电脑地址，形如 192.168.1.10:5443', 'Fill the address first, like 192.168.1.10:5443') }];
         if (typeof pass !== 'string' || pass === '')
             return [{ type: 'toast', text: text(locale, '先填导出时设的口令', 'Fill the passphrase you exported with') }];
         if (backupBusy)
@@ -1864,16 +1887,19 @@ export function apply(ctx) {
             return [{ type: 'toast', text: text(locale, '这个地址看起来不对', 'That address looks wrong') }];
         }
         const origin = url.origin;
-        const token = url.searchParams.get('token') ?? '';
-        backupHost = at;
+        // 令牌优先取单独那个输入框；地址里带了也认（整行粘贴的用法）。
+        const fromUrl = url.searchParams.get('token') ?? '';
+        const useToken = tokenIn !== '' ? tokenIn : fromUrl;
+        // 只记 host:port —— 令牌不落盘。
+        backupHost = url.host;
         backupBusy = true;
         backupStatus = text(locale, '正在取备份…', 'Fetching the backup…');
         notify();
         void (async () => {
             let cookie = '';
-            if (token !== '') {
+            if (useToken !== '') {
                 // 不跟重定向：303 本身就是「cookie 在这儿了」的信号。
-                const hello = await fetch(`${origin}/?token=${encodeURIComponent(token)}`, { redirect: 'manual' });
+                const hello = await fetch(`${origin}/?token=${encodeURIComponent(useToken)}`, { redirect: 'manual' });
                 const jar = typeof hello.headers.getSetCookie === 'function' ? hello.headers.getSetCookie() : [];
                 const single = hello.headers.get('set-cookie');
                 const parts = jar.length > 0 ? jar : single === null ? [] : [single];
@@ -1907,7 +1933,7 @@ export function apply(ctx) {
             await reload();
             await refresh(true);
             const total = summary.accounts + summary.logins;
-            void settings.set('backup', { host: at }).catch(() => { });
+            void settings.set('backup', { host: url.host }).catch(() => { });
             backupStatus = total === 0
                 ? text(locale, '这份备份里没有账号', 'This backup has no accounts')
                 : text(locale, `导入完成：账号 ${summary.accounts} 个、订阅登录 ${summary.logins} 条`, `Imported ${summary.accounts} accounts and ${summary.logins} sign-ins`);

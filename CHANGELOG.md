@@ -2,6 +2,13 @@
 
 本文件记录每个版本的变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 0.2.4 — 2026-11-26
+
+补上 `engines.dsh` 声明。
+
+- 之前只有 `engines.node`，插件市场读不到「这个包需要哪个版本的 DSH」，索引里 `engines` 是空的，客户端也就没法按版本判断能不能装。
+- 现在声明 `>=0.2.1-rc.5 <0.3.0-0`：与 `peerDependencies` 里 `@deepseek-ai/dsh-llm` 的范围一致，也是实测过的区间。
+- 无代码改动。
 ## 0.2.3 — 2026-11-25
 
 补上桌面端仍然缺失的 15 个端点，这些端点全部是把上游 magpie 已有的页面接到我们的数据上。

@@ -941,7 +941,7 @@ export function apply(ctx) {
                         plugin: focusedPlugin,
                         display,
                         checkin: { auto: checkinAuto },
-                    });
+                    }, caps);
                     const json = JSON.stringify(data);
                     if (json === last)
                         return;
@@ -1071,14 +1071,15 @@ export function apply(ctx) {
                  * 三种控件共用一个 action，靠 `bind` 分辨改哪一项 —— App 的 change
                  * 通道会把 `{bind, value}` 一起发回来（`dsh_ui_plugin_controls_state.dart:141`）。
                  */
+
                 setDisplay: (_scope, event) => {
                     const bind = typeof event?.value?.bind === 'string' ? event.value.bind : '';
                     const value = event?.value?.value;
                     const next = { ...display };
                     if (bind === 'data.display.strip')
-                        next.strip = value === 'on';
+                        next.strip = truthOf(value);
                     else if (bind === 'data.display.note')
-                        next.note = value === 'on';
+                        next.note = truthOf(value);
                     else if (bind === 'data.display.noteKind')
                         next.noteKind = value === 'quota' ? 'quota' : 'tokens';
                     else if (bind === 'data.display.models')
@@ -1097,9 +1098,9 @@ export function apply(ctx) {
                  * 关掉只是不再自动签，额度卡上的「签到」按钮照样能手动签。
                  */
                 setCheckinAuto: async (_scope, event) => {
-                    const value = event?.value?.value;
-                    await checkinSchedule(value === 'on');
-                    checkinAuto = value === 'on';
+                    const on = truthOf(event?.value?.value);
+                    await checkinSchedule(on);
+                    checkinAuto = on;
                     void refresh().catch(() => { });
                     return [{ type: 'toast', text: text(event?.locale, checkinAuto ? '自动签到已打开' : '自动签到已关闭', checkinAuto ? 'Auto check-in on' : 'Auto check-in off') }];
                 },
@@ -2296,6 +2297,18 @@ function bucketLabel(at, hourly) {
     const dd = String(d.getUTCDate()).padStart(2, '0');
     return `${mm}-${dd}`;
 }
+/**
+ * 控件值 → 布尔。
+ *
+ * 同一个开关可能来自两种控件：`toggle` 直接给布尔，`chips` 给 `on`/`off`
+ * 字符串。面板会按设备能力在两者间切换（见 `panel.js` 的 `boolSwitch`），
+ * 所以这里两种都得认 —— 只判 `=== 'on'` 的话，toggle 传来的 `false` 会被当成关、
+ * `true` 也会被当成关，开关点了没反应。
+ */
+function truthOf(value) {
+    return value === true || value === 'on';
+}
+
 /** 从账号 key（`provider` 或 `provider#xxxxxx`）取回 provider id。 */
 function providerOfKey(key) {
     const hash = key.indexOf('#');

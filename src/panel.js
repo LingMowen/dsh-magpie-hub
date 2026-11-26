@@ -59,6 +59,11 @@ const PAGE_USAGE = 'usage';
 const PAGE_PLUGINS = 'plugins';
 const PAGE_STORE = 'store';
 const PAGE_SETTINGS = 'settings';
+/**
+ * 允许的页面 id。注意 quotas 与 store **不在页签里**：额度已并进平台页
+ *（卡片尾部就有「剩 N」，点进详情有完整窗口），商店并进插件页。保留这两个
+ * id 是为了兼容旧快照里残留的 page 值 —— pageBody 仍能渲染，不会白屏。
+ */
 const PAGES = [PAGE_AGENTS, PAGE_QUOTAS, PAGE_USAGE, PAGE_PLUGINS, PAGE_STORE, PAGE_SETTINGS];
 export const WORDS_ZH = {
     panelTitle: 'Magpie 面板',
@@ -740,8 +745,12 @@ export function panelView(snapshot, caps, ui) {
     if (focus !== undefined && focus !== null) {
         return {
             v: VIEW_VERSION,
-            // 品牌紫作视图 accent：App 的 v2 按钮描边与图标用 accent 着色，
-            // 不设就落到默认灰，看起来像「白按钮」。
+            accent:
+                // 跟随用户主题色，不写死。真机截图里默认蓝跟 App 其他界面混在一起，
+                // 面板没有辨识度；写死某一个具名色又会在深色主题下突兀。
+                'app',
+            // 纵向间距统一按 M（12dp）：默认留白在手机上偏挤，卡片之间几乎贴住。
+            style: { gap: 'M' },
             type: 'stack',
             title: w.panelTitle,
             children: providerDetail(snapshot, focus, w),
@@ -753,8 +762,8 @@ export function panelView(snapshot, caps, ui) {
     if (editing !== undefined) {
         return {
             v: VIEW_VERSION,
-            // 品牌紫作视图 accent：App 的 v2 按钮描边与图标用 accent 着色，
-            // 不设就落到默认灰，看起来像「白按钮」。
+            accent: 'app',
+            style: { gap: 'M' },
             type: 'stack',
             title: w.panelTitle,
             children: pluginDetailPage(snapshot, editing, w),
@@ -764,6 +773,8 @@ export function panelView(snapshot, caps, ui) {
     if (ui?.models === true) {
         return {
             v: VIEW_VERSION,
+            accent: 'app',
+            style: { gap: 'M' },
             type: 'stack',
             title: w.panelTitle,
             children: modelsPage(snapshot, w, ui?.display ?? null),
@@ -773,11 +784,20 @@ export function panelView(snapshot, caps, ui) {
     const query = typeof ui?.query === 'string' ? ui.query : '';
     return {
         v: VIEW_VERSION,
-        // 品牌紫作视图 accent：App 的 v2 按钮描边与图标都用它着色，
-        // 不设会落到 `DshUiPluginPalette.defaultAccent`（0x3D6FD6，主题蓝）。
+        // 跟随用户主题色。真机截图里默认蓝（0x3D6FD6）跟 App 其他界面完全一样，
+        // 面板没有辨识度；写死具名色又会在换主题时突兀，所以交给 App。
+        accent: 'app',
+        style: { gap: 'M' },
         type: 'stack',
         title: w.panelTitle,
-        children: [navChips(page, w), ...pageBody(snapshot, page, query, w, normalizeInstallStatus(ui?.install, w), ui?.update, ui?.storeLimit ?? STORE_PAGE, ui?.display ?? null, ui?.checkin ?? null)],
+        children: pageTabs(snapshot, page, query, w, {
+            caps,
+            install: normalizeInstallStatus(ui?.install, w),
+            update: ui?.update,
+            storeLimit: ui?.storeLimit ?? STORE_PAGE,
+            display: ui?.display ?? null,
+            checkin: ui?.checkin ?? null,
+        }),
     };
 }
 /**
@@ -792,24 +812,112 @@ export function panelView(snapshot, caps, ui) {
  * 里 `readOnly = bind == null || …`），点击后 App 会把 `{bind, value}` 发回
  * `onChange` 指定的 action，插件存下当前页再 `refresh`。
  */
-function navChips(page, w) {
-    return {
+/**
+ * 主页面骨架：五页页签。
+ *
+ * 优先用 App 的 `tabs` 控件（真的页签：下划线指示器 + `SemanticsRole.tabBar`，
+ * 见 `dsh_ui_plugin_choice.dart:292` 的 `DshUiTabBar`）。它的当前页是
+ * **客户端状态**（`_DshUiControlContainerViewState._page`），切页不经过 service、
+ * 也不会触发 `refresh` —— 比原来「每次切页都重建整个视图」省一次往返。
+ *
+ * ⚠ 状态能保住的前提是节点 `path` 不变：`DshUiControlContainerView(key:
+ * ValueKey(node.path))`（`dsh_ui_widgets.dart:189`），它由在树里的位置算出。
+ * `tabs` 永远是视图的第一个子节点，所以点开关触发的 `refresh` 不会把页签弹回第一页。
+ *
+ * 旧版 App 不认 `tabs` 时退回 `chips`（一次只渲染当前页，切页要 service 参与）。
+ */
+function pageTabs(snapshot, page, query, w, ctx) {
+    if (hasNode(ctx?.caps, 'tabs')) {
+        const sections = [
+            { page: PAGE_AGENTS, label: w.navAgents },
+            { page: PAGE_USAGE, label: w.navUsage },
+            { page: PAGE_PLUGINS, label: w.navPlugins },
+            { page: PAGE_SETTINGS, label: w.navSettings },
+        ];
+        return [{
+            type: 'tabs',
+            items: sections.map(s => ({
+                label: s.label,
+                children: pageBody(snapshot, s.page, query, w, ctx?.install, ctx?.update, ctx?.storeLimit ?? STORE_PAGE, ctx?.display ?? null, ctx?.checkin ?? null, ctx?.caps ?? null),
+            })),
+        }];
+    }
+    // 降级：老 App 的 chips + 只渲染当前页
+    return [{
         type: 'chips',
         label: w.navLabel,
         bind: 'data.ui.page',
         value: page,
-        // 只放 5 个：App 的 `DshUiChips` 是 `Wrap` 自动换行（`dsh_ui_plugin_choice.dart:222`），
-        // 6 个中文标签在手机宽度下折成 5+1，「设置」单独掉到第二行，
-        // 看起来像另一组不相干的控件。所以页签固定 5 个，把「商店」并进「插件」页。
         options: [
             { label: w.navAgents, value: PAGE_AGENTS },
-            { label: w.navQuotas, value: PAGE_QUOTAS },
             { label: w.navUsage, value: PAGE_USAGE },
             { label: w.navPlugins, value: PAGE_PLUGINS },
             { label: w.navSettings, value: PAGE_SETTINGS },
         ],
         onChange: { id: 'switchPage' },
+    }, ...pageBody(snapshot, page, query, w, ctx?.install, ctx?.update, ctx?.storeLimit ?? STORE_PAGE, ctx?.display ?? null, ctx?.checkin ?? null, ctx?.caps ?? null)];
+}
+/**
+ * 这台设备支持某个视图节点吗。
+ *
+ * App 在 caps.components 里上报它认识的节点名（DshGoCaps.components →
+ * bridge routes.js:55 切分 → 插件看到的 caps.components）。旧版 App 不上报
+ * 这个字段，数组是空的 —— 此时**一律返回 true**：空列表意味着「没有信息」，
+ * 不代表「什么都不支持」，按不支持处理会把老用户的界面打成残废。
+ *
+ * 所以这里只做**渐进增强**（有 toggle 就用开关、没有就用两个 chips），
+ * 不用来决定整页降级。
+ */
+function hasNode(caps, name) {
+    const list = caps?.components;
+    if (!Array.isArray(list) || list.length === 0)
+        return true;
+    return list.includes(name);
+}
+/**
+ * 布尔绑定根的值：有 `toggle` 就给布尔，退回 `chips` 时给 `on`/`off`。
+ *
+ * 必须与 `boolSwitch` 选控件时用同一个判断，否则控件是 toggle 而数据是字符串
+ *（或反过来），开关一打开就是 broken 状态。
+ */
+function boolOf(on, caps) {
+    return hasNode(caps, 'toggle') ? on === true : on === true ? 'on' : 'off';
+}
+/**
+ * 一个布尔开关。
+ *
+ * 支持 toggle 就用它：一行画出「标签 + 开关」，比 chips 的 on/off 两态省一整行
+ *（chips 的 label 自己占一行，选项再占一行）。不支持时退回 chips，行为一致。
+ *
+ * 注意 toggle 的 value 必须是**布尔**（`dsh_ui_plugin_controls_model.dart`
+ * 里 `kind == 'toggle' && current is! bool` 会判非法），不能写 on/off 字符串。
+ */
+function boolSwitch(ctx) {
+    const { label, bind, value, onChange, w, caps } = ctx;
+    if (hasNode(caps, 'toggle')) {
+        return { type: 'toggle', label, bind, value: value === true, onChange };
+    }
+    return {
+        type: 'chips',
+        label,
+        bind,
+        value: value === true ? 'on' : 'off',
+        options: [
+            { label: w.displayOn, value: 'on' },
+            { label: w.displayOff, value: 'off' },
+        ],
+        onChange,
     };
+}
+/**
+ * 单选（2 个以上选项）。
+ *
+ * 支持 select 就用下拉（MenuAnchor，宽度撑满、纵向一行）；否则退回 chips。
+ * 两者的 options 形状相同（{label, value}），所以只换 type。
+ */
+function choiceField(ctx) {
+    const { label, bind, value, options, onChange, caps } = ctx;
+    return { type: hasNode(caps, 'select') ? 'select' : 'chips', label, bind, value, options, onChange };
 }
 /** 当前页的正文。 */
 /**
@@ -859,7 +967,7 @@ function normalizeUpdateStatus(raw, w) {
         return { text: w.pluginUpdateFailed(String(raw.error ?? w.metricNone)), tone: 'bad' };
     return null;
 }
-function pageBody(snapshot, page, query, w, installStatus, updateStatus = null, storeLimit = STORE_PAGE, display = null, checkin = null) {
+export function pageBody(snapshot, page, query, w, installStatus, updateStatus = null, storeLimit = STORE_PAGE, display = null, checkin = null, caps = null) {
     switch (page) {
         case PAGE_QUOTAS:
             return quotaTab(snapshot, w);
@@ -870,7 +978,7 @@ function pageBody(snapshot, page, query, w, installStatus, updateStatus = null, 
             // 商店已并入插件页；旧状态里残留的 page=store 也渲染插件页，避免空白。
             return pluginsPage(snapshot, w, updateStatus, storeLimit);
         case PAGE_SETTINGS:
-            return settingsPage(snapshot, w, display, checkin);
+            return settingsPage(snapshot, w, display, checkin, caps);
         default:
             return agentTab(snapshot, w, query);
     }
@@ -1196,7 +1304,7 @@ function modelsPage(snapshot, w, display = null) {
     children.push({ type: 'text', text: w.modelsHint, tone: 'muted' });
     return children;
 }
-function settingsPage(snapshot, w, display = null, checkin = null) {
+function settingsPage(snapshot, w, display = null, checkin = null, caps = null) {
     const providers = Array.isArray(snapshot.providers) ? snapshot.providers : [];
     const accounts = providers.reduce((sum, p) => sum + (Array.isArray(p.accounts) ? p.accounts.length : 0), 0);
     const models = providers.reduce((sum, p) => sum + (isFiniteNumber(p.models) ? p.models : 0), 0);
@@ -1218,48 +1326,39 @@ function settingsPage(snapshot, w, display = null, checkin = null) {
         // 自动签到：宿主每 10 分钟看一次、距上次满 24 小时签一轮。手机上只
         // 给一个总开关（逐账号的排除放在平台详情页的签到列表里，那里上下文在）。
         { type: 'text', text: `**${w.sectionCheckin}**` },
-        {
-            type: 'chips',
+        boolSwitch({
             label: w.checkinAuto,
             bind: 'data.checkin.auto',
-            value: checkin?.auto === true ? 'on' : 'off',
-            options: [
-                { label: w.displayOn, value: 'on' },
-                { label: w.displayOff, value: 'off' },
-            ],
+            value: checkin?.auto === true,
             onChange: { id: 'setCheckinAuto' },
-        },
+            w,
+            caps,
+        }),
         { type: 'text', text: w.checkinHint, tone: 'muted' },
         // 显示偏好。三项都是 `chips`（带 bind 才能写），点一下立刻生效 ——
         // 状态条与脚注是 App 常驻的位置，用户随口就能关掉比翻开关重要。
         { type: 'text', text: `**${w.displaySection}**` },
-        {
-            type: 'chips',
+        boolSwitch({
             label: w.displayStrip,
             bind: 'data.display.strip',
-            value: display?.strip === false ? 'off' : 'on',
-            options: [
-                { label: w.displayOn, value: 'on' },
-                { label: w.displayOff, value: 'off' },
-            ],
+            value: display?.strip !== false,
             onChange: { id: 'setDisplay' },
-        },
-        {
-            type: 'chips',
+            w,
+            caps,
+        }),
+        boolSwitch({
             label: w.displayNote,
             bind: 'data.display.note',
-            value: display?.note === false ? 'off' : 'on',
-            options: [
-                { label: w.displayOn, value: 'on' },
-                { label: w.displayOff, value: 'off' },
-            ],
+            value: display?.note !== false,
             onChange: { id: 'setDisplay' },
-        },
+            w,
+            caps,
+        }),
         // 脚注写什么只在脚注打开时有意义，关掉就不显示这一行，少一项干扰。
         ...(display?.note === false
             ? []
-            : [{
-                    type: 'chips',
+            : [
+                choiceField({
                     label: w.displayNoteKind,
                     bind: 'data.display.noteKind',
                     value: display?.noteKind === 'quota' ? 'quota' : 'tokens',
@@ -1268,10 +1367,11 @@ function settingsPage(snapshot, w, display = null, checkin = null) {
                         { label: w.displayNoteQuota, value: 'quota' },
                     ],
                     onChange: { id: 'setDisplay' },
-                }]),
+                    caps,
+                }),
+            ]),
         { type: 'text', text: `**${w.displayModels}**` },
-        {
-            type: 'chips',
+        choiceField({
             label: w.displayModels,
             bind: 'data.display.models',
             value: display?.models === 'flat' ? 'flat' : 'group',
@@ -1280,7 +1380,8 @@ function settingsPage(snapshot, w, display = null, checkin = null) {
                 { label: w.displayModelsFlat, value: 'flat' },
             ],
             onChange: { id: 'setDisplay' },
-        },
+            caps,
+        }),
         {
             // 模型只是「看得见的名字」，没有可点的动作，所以做成一行入口而不是
             // 在设置页里铺 76 行。
@@ -1943,7 +2044,9 @@ function remainingTone(percent) {
  * 约 350 px，把真正要看的数字推到第二屏。放到底部后首屏直接是数字。
  */
 function usageTab(snapshot, w) {
-    const stats = snapshot.stats;
+    // 快照还没就绪（或构建失败）时 stats 是 undefined —— 五页现在同时渲染，
+    // 这里必须能容忍空数据，否则整个面板一起崩。
+    const stats = snapshot?.stats ?? {};
     const series = Array.isArray(stats.series) ? stats.series.slice(-MAX_CHART_CATEGORIES) : [];
     const ranked = Array.isArray(stats.byProvider)
         ? stats.byProvider.slice().sort((a, b) => b.tokens - a.tokens).slice(0, MAX_USAGE_ROWS)
@@ -2040,7 +2143,7 @@ function routingTab(snapshot, w) {
  * `routing.rows`（表格行）与 `updatedAt`（刷新时间）。
  * `now` 省略时取 `Date.now()`；测试里传固定值即可复现。
  */
-export function panelData(snapshot, locale, now, ui) {
+export function panelData(snapshot, locale, now, ui, caps = null) {
     // ui.checkin 是宿主传下来的 {auto} —— 设置页的自动签到开关读它
     const w = words(locale);
     const stamp = isFiniteNumber(now) ? now : Date.now();
@@ -2098,12 +2201,15 @@ export function panelData(snapshot, locale, now, ui) {
         // 设置页「显示」那几个 `chips` 的绑定根。有 `bind` 的控件 `value` 会被
         // App 改写成 `{$: bind}`（`dshUiInputBindings`），选中态完全靠这里下发，
         // 缺了它们点一下会「跳回原样」。
+        // 绑定根的**类型**必须跟控件类型对上：`toggle` 只认布尔（传字符串会被判
+        // `plugInputInvalidValue` 直接 broken），`chips` 只认它自己 options 里的字符串。
+        // 面板按设备能力在两者间切换（`boolSwitch`），这里跟着切。
         checkin: {
-            auto: ui?.checkin?.auto === true ? 'on' : 'off',
+            auto: boolOf(ui?.checkin?.auto === true, caps),
         },
         display: {
-            strip: ui?.display?.strip === false ? 'off' : 'on',
-            note: ui?.display?.note === false ? 'off' : 'on',
+            strip: boolOf(ui?.display?.strip !== false, caps),
+            note: boolOf(ui?.display?.note !== false, caps),
             noteKind: ui?.display?.noteKind === 'quota' ? 'quota' : 'tokens',
             models: ui?.display?.models === 'flat' ? 'flat' : 'group',
         },

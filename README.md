@@ -6,7 +6,7 @@
 
 | | |
 |---|---|
-| 版本 | 0.2.4 |
+| 版本 | 0.2.5 |
 | 运行环境 | Node `^22.19.0 \|\| >=24.0.0` |
 | 形态 | 纯 ESM，无可编译步骤 |
 | 许可 | AGPL-3.0-only |
@@ -41,14 +41,14 @@ cd ~/.dsh/profiles/web
 npm i dsh-magpie-hub
 
 # 或者用本地打包的 tgz
-npm i /path/to/dsh-magpie-hub-0.2.4.tgz
+npm i /path/to/dsh-magpie-hub-0.2.5.tgz
 ```
 
 然后在 profile 的 `package.json` 里把本包加进 bundle 列表：
 
 ```json
 {
-  "dependencies": { "dsh-magpie-hub": "0.2.4" },
+  "dependencies": { "dsh-magpie-hub": "0.2.5" },
   "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "dsh-magpie-hub"] } }
 }
 ```

@@ -2,6 +2,44 @@
 
 本文件记录每个版本的变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 0.2.5 — 2026-11-26
+
+手机端照搬了 [Hipple/dsh-go-magpie] 的四个手法，桌面端一行没动（网页端 UI 本来就是 magpie 原版）。
+
+### 页签换成 App 原生 `tabs`
+
+- 之前是自绘 `chips` 换行：每切一次页都要 `refresh` 重建整个视图，一次往返。
+- 现在用视图的 `tabs` 节点，当前页是**客户端状态**，切页不发请求。五个页签会超过
+  `DshUiTabBar` 的 `fit(columns: 4)` 上限、折成 4+1 行且「设置」没有下划线指示器，
+  所以**额度并进平台页**（卡片尾部本来就写着「剩 N」，点进详情有完整窗口），
+  页签固定四个：平台 / 用量 / 插件 / 设置。
+- 旧版 App 不认 `tabs` 时退回 chips（只渲染当前页），两条路径都返回数组。
+
+### 开关用原生 `toggle`、多选项用原生 `select`
+
+- 设置页的三个布尔项（自动签到、额度条、消耗脚注）从「两个 chips」换成真开关；
+  两个多选项（脚注写什么、模型列表排法）从 chips 换成下拉。
+- **`toggle` 的 `value` 必须是布尔**（App 侧 `current is! bool` 直接判 broken），
+  所以数据绑定根也跟着换：有 `toggle` 能力时给 `true/false`，退回 chips 时给 `'on'/'off'`。
+  两侧用同一个 `hasNode` 判断，任何一边单独变都会让开关立刻坏掉。
+
+### 按设备能力渐进增强
+
+- 读 `caps.components`（App 上报它认识哪些节点）决定用哪个控件。
+- **空数组按「没有信息」处理、一律乐观返回 true**：旧 App 不上报这个字段，
+  不代表什么都不支持；面板本来就依赖 v2 节点，真不支持的话整页早就 broken 了。
+
+### 根节点加 `accent` 与 `style.gap`
+
+- `accent: 'app'` 跟随用户的主题色（原来写死默认蓝，跟 App 其他界面没区别）。
+- `style: { gap: 'M' }`（12dp）。
+
+### 顺手修掉两个真 bug
+
+- `usageTab` 在 `stats` 缺失时抛 `TypeError`。之前只渲染当前页，永远走不到；改成五页
+  同时渲染后，任何一页的空数据都会把整个面板带崩。现在容忍空快照。
+- `boolSwitch` 的 chips 分支少写了一层括号，只在「设备明确不支持 toggle」时才暴露。
+
 ## 0.2.4 — 2026-11-26
 
 补上 `engines.dsh` 声明。

@@ -6,7 +6,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { panelView } from '../src/panel.js';
+import { panelView, pageBody, WORDS_ZH } from '../src/panel.js';
 
 /** 一个最小快照：一个平台、一个账号、一个额度窗口、一份用量。 */
 function snapshot(overrides = {}) {
@@ -132,50 +132,83 @@ function visibleTexts(view) {
     }
     return out;
 }
+/**
+ * 只看某一页的可见文字。
+ *
+ * 五页现在同时渲染进一个 tabs 视图（切页是纯客户端行为），所以整份视图里会同时
+ * 出现别的页的文字 —— 断言「某页有什么」时必须只取那一段。
+ */
+function pageTexts(view, page) {
+    return visibleTexts({ ...view, children: pageOf(view, page) });
+}
+/**
+ * 额度页的正文节点。
+ *
+ * 额度已并进平台页（卡片尾部有摘要、详情有完整窗口），不再占页签，所以从视图里
+ * 取不到那一屏。这几条用例验证的是那一屏的排版规则，直接调 pageBody 拿。
+ */
+function quotaBody() {
+    return pageBody(snapshot(), 'quotas', '', WORDS_ZH);
+}
 
 /**
  * 顶部导航（`chips`）。App 的 `tabs` 会按宽度折成 3+1，所以页面切换改成了
  * 插件自绘的 chips（`Wrap` 横排换行，见 panel.js 的 navChips）。
  */
 function navOf(view) {
+    // 主页面骨架优先用 App 的 tabs（原生页签）；老 App 只有 chips。
+    const tabs = flatten(view).find(n => n.type === 'tabs');
+    if (tabs !== undefined)
+        return tabs;
     const chips = flatten(view).find(n => n.type === 'chips');
-    assert.ok(chips, '视图应有 chips 导航');
+    assert.ok(chips, '视图应有 tabs 或 chips 导航');
     return chips;
 }
-/** 当前页的正文节点（导航之后的所有节点）。 */
-function pageOf(view) {
-    assert.equal(view.children[0].type, 'chips', '第一个子节点应是导航');
+/** 当前页的正文节点。
+ *
+ * 有 tabs 时五页的 children 都在视图里（纯客户端切换），所以按 wanted 取对应那一段；
+ * 没有 tabs 时只渲染了当前页，直接返回导航之后的所有节点。
+ */
+function pageOf(view, wanted = 'agents') {
+    const nav = view.children[0];
+    assert.ok(nav !== undefined, '视图应有第一个子节点');
+    if (nav.type === 'tabs') {
+        // 额度不单独成页（已并进平台页），页签只剩四页。
+        const order = ['agents', 'usage', 'plugins', 'settings'];
+        const idx = order.indexOf(wanted);
+        assert.ok(idx >= 0 && idx < nav.items.length, `页签里找不到 ${wanted}`);
+        return nav.items[idx].children;
+    }
+    assert.equal(nav.type, 'chips', '第一个子节点应是导航');
     return view.children.slice(1);
 }
 
-test('导航是自绘 chips，五个页面：平台 / 额度 / 用量 / 插件 / 设置', () => {
+test('导航是 App 原生页签（tabs），四个页面：平台 / 用量 / 插件 / 设置', () => {
     const nav = navOf(panelView(snapshot(), { locale: 'zh' }));
-    // 固定 5 个：App 的 `DshUiChips` 是 Wrap 自动换行，6 个中文标签会折成 5+1，
-    // 「设置」掉到第二行看起来像另一组控件（真机确认过）。所以商店并进插件页。
-    assert.deepEqual(nav.options.map(o => o.label), ['平台', '额度', '用量', '插件', '设置']);
-    assert.deepEqual(nav.options.map(o => o.value), ['agents', 'quotas', 'usage', 'plugins', 'settings']);
-    // 控件只有带 bind 才可写（App 侧 readOnly = bind == null || …）
-    assert.equal(nav.bind, 'data.ui.page');
-    assert.equal(nav.onChange.id, 'switchPage');
-    assert.equal(nav.value, 'agents', '默认落在平台页');
+    // 固定 4 个：App 的 DshUiTabBar 是 fit(columns: 4)，5 个会折成 4+1 行、
+    // 「设置」单独占一行且没有下划线指示器。所以额度并进平台页（卡片尾部就写着
+    // 「剩 N」，点进详情有完整窗口）、商店并进插件页。
+    assert.deepEqual(nav.items.map(x => x.label), ['平台', '用量', '插件', '设置']);
+    assert.equal(nav.items.length, 4, '四页');
+    // 每页都有自己的正文（不是空壳）
+    assert.ok(nav.items.every(x => Array.isArray(x.children) && x.children.length > 0), '每页都要有内容');
 });
 
 test('请求记录并入用量页；已装包搬去商店页（平台页不再混这两件事）', () => {
-    const usage = flatten(pageOf(panelView(snapshot(), { locale: 'zh' }, { page: 'usage' })))
+    const usage = flatten(pageOf(panelView(snapshot(), { locale: 'zh' }, { page: 'usage' }), 'usage'))
         .filter(n => n.type === 'text').map(n => n.text);
     assert.ok(usage.includes('**请求记录**'), '用量页应有「请求记录」小节（Markdown 粗体）');
-    const agents = flatten(pageOf(panelView(snapshot(), { locale: 'zh' }, { page: 'agents' })))
+    const agents = flatten(pageOf(panelView(snapshot(), { locale: 'zh' }, { page: 'agents' }), 'agents'))
         .filter(n => n.type === 'text').map(n => n.text);
     assert.ok(!agents.includes('**已装的包**'), '平台页不该再有「已装的包」');
-    const plugins = flatten(pageOf(panelView(snapshot(), { locale: 'zh' }, { page: 'plugins' })))
+    const plugins = flatten(pageOf(panelView(snapshot(), { locale: 'zh' }, { page: 'plugins' }), 'plugins'))
         .filter(n => n.type === 'text' && typeof n.text === 'string').map(n => n.text);
     assert.ok(plugins.some(t => t.includes('已安装的插件')), '插件页应有「已安装的插件」小节');
     assert.ok(plugins.includes('**可安装**'), '插件页应有「可安装」小节（商店已并进来）');
 });
 
 test('额度窗口用 bar 而不是 ring（手机上条状省高度且接近满额也看得出）', () => {
-    const view = panelView(snapshot(), { locale: 'zh' }, { page: 'quotas' });
-    const bars = flatten(view).filter(n => n.type === 'progress');
+    const bars = flatten(quotaBody()).filter(n => n.type === 'progress');
     assert.ok(bars.length > 0, '应至少有 1 个 progress');
     for (const node of bars) {
         assert.equal(node.shape, 'bar');
@@ -184,8 +217,7 @@ test('额度窗口用 bar 而不是 ring（手机上条状省高度且接近满�
 });
 
 test('额度条尾给「剩多少」而不是百分比', () => {
-    const view = panelView(snapshot(), { locale: 'zh' }, { page: 'quotas' });
-    const bar = flatten(view).find(n => n.type === 'progress');
+    const bar = flatten(quotaBody()).find(n => n.type === 'progress');
     assert.equal(bar.label, '智点');
     assert.equal(bar.caption, '剩 1 / 2,300');
     // 条画的是**剩余**比例：2300 里只剩 1，即 0.04%，属于危险 → bad。
@@ -200,16 +232,14 @@ test('账号默认按原文显示（不打码），且平台名不靠它再出�
     assert.ok(all.includes('wps-1234567890'), `详情页账号应原文显示，实际：${all}`);
     // 额度段的 `WPS_1000000001` 已不再塞进详情页（它属于「额度」页那一屏），
     // 详情页只保留账号列表里那一个身份，避免同一账号一屏出现两次。
-    const quota = panelView(snapshot(), { locale: 'zh' }, { page: 'quotas' });
-    const quotaText = visibleTexts(quota).join(' ');
+    const quotaText = visibleTexts({ children: quotaBody() }).join(' ');
     assert.ok(quotaText.includes('WPS_1000000001'), '额度页仍应显示 usage 账号');
     // 额度页不再用 provider id 当账号身份：那一屏里它只该作为小节标题出现
     assert.ok(!all.includes('wps-lingxi —'), '不应出现「provider id — ...」形式的身份行');
 });
 
 test('额度页不再重复平台名（provider 名只作小节标题出现）', () => {
-    const view = panelView(snapshot(), { locale: 'zh' }, { page: 'quotas' });
-    const all = visibleTexts(view).join('\n');
+    const all = visibleTexts({ children: quotaBody() }).join('\n');
     const hits = all.split('WPS 灵犀 Lingxi').length - 1;
     // 平台页折叠标题 + 额度页小节标题 = 2，不能再多
     assert.ok(hits <= 2, `平台名出现 ${hits} 次，应 ≤2`);
@@ -217,7 +247,7 @@ test('额度页不再重复平台名（provider 名只作小节标题出现）',
 
 test('额度页：套餐名与平台标题重复时省略，余额与条尾不重复', () => {
     const view = panelView(snapshot(), { locale: 'zh' }, { page: 'quotas' });
-    const quota = pageOf(view);
+    const quota = quotaBody();
     const row = flatten(quota).find(n => n.type === 'list')?.items?.[0];
     assert.ok(row, '额度页应有账号行');
     // fixture 里 plan 与 provider 名相同 -> 不该再出现在副标题
@@ -227,15 +257,14 @@ test('额度页：套餐名与平台标题重复时省略，余额与条尾不�
     assert.ok(String(row.subtitle ?? '').includes('天'), '到期时间应保留');
 });
 test('到期时间翻成人话，不吐 ISO 串', () => {
-    const view = panelView(snapshot(), { locale: 'zh' }, { page: 'quotas' });
-    const all = visibleTexts(view).join('\n');
+    const all = visibleTexts({ children: quotaBody() }).join('\n');
     assert.ok(!all.includes('2026-12-07T15:49:04+08:00'), '不该出现原始 ISO 时间');
     assert.ok(/还有 \d+ 天|月\d+日到期|已到期/.test(all), `应出现人话时间，实际：${all}`);
 });
 
 test('用量页：周期选择在数字之后（首屏直接是数据）', () => {
     const view = panelView(snapshot(), { locale: 'zh' }, { page: 'usage' });
-    const usage = pageOf(view);
+    const usage = pageOf(view, 'usage');
     const first = usage[0];
     assert.equal(first.type, 'row', '第一块应该是指标');
     const flat = flatten(usage);
@@ -250,7 +279,7 @@ test('用量页：周期选择在数字之后（首屏直接是数据）', () =>
 
 test('没有数据的指标显示「暂无」，真 0 显示 0', () => {
     const view = panelView(snapshot(), { locale: 'zh' }, { page: 'usage' });
-    const usage = pageOf(view);
+    const usage = pageOf(view, 'usage');
     const metrics = flatten(usage).filter(n => n.type === 'metric');
     const byLabel = Object.fromEntries(metrics.map(m => [m.label, m.value]));
     assert.equal(byLabel['Token'], '0', '真 0 要显示 0');
@@ -286,11 +315,11 @@ test('诊断信息在设置页，平台页只给下一步去哪', () => {
             firstError: 'Cannot find module @magpie-community/x',
         },
     };
-    const agents = visibleTexts(panelView(bare, { locale: 'zh' })).join(' ');
+    const agents = pageTexts(panelView(bare, { locale: 'zh' }), 'agents').join(' ');
     assert.match(agents, /还没有安装 magpie 插件/);
     assert.match(agents, /去插件页安装/);
     assert.equal(agents.includes('/root/.config/magpie'), false, '平台页不露数据目录');
-    const settings = visibleTexts(panelView(bare, { locale: 'zh' }, { page: 'settings' })).join(' ');
+    const settings = pageTexts(panelView(bare, { locale: 'zh' }, { page: 'settings' }), 'settings').join(' ');
     assert.match(settings, /这次扫描的结果/);
     assert.match(settings, /root\/\.config\/magpie/);
     assert.match(settings, /登记的插件/);
@@ -302,7 +331,7 @@ test('诊断信息在设置页，平台页只给下一步去哪', () => {
 
 test('平台页是一列卡片，点卡片进详情（openProvider 带平台 id）', () => {
     const view = panelView(snapshot(), { locale: 'zh' });
-    const rows = pageOf(view).flatMap(n => (n.type === 'list' ? n.items : []));
+    const rows = pageOf(view, 'agents').flatMap(n => (n.type === 'list' ? n.items : []));
     const card = rows.find(r => r.action && r.action.id === 'openProvider');
     assert.ok(card, '平台要以可点的卡片出现');
     assert.equal(card.action.args.provider, 'wps-lingxi');
@@ -312,7 +341,7 @@ test('平台页是一列卡片，点卡片进详情（openProvider 带平台 id�
 
 test('卡片右侧额度摘要只写剩 N，不写已用', () => {
     const view = panelView(snapshot(), { locale: 'zh' });
-    const rows = pageOf(view).flatMap(n => (n.type === 'list' ? n.items : []));
+    const rows = pageOf(view, 'agents').flatMap(n => (n.type === 'list' ? n.items : []));
     const card = rows.find(r => r.action && r.action.id === 'openProvider');
     assert.match(card.trailing, /剩/);
     assert.equal(card.trailing.includes('已用'), false);
@@ -329,18 +358,18 @@ test('详情视图有返回行，且用 collapse 图标（App 没有左箭头图
 
 test('详情视图的焦点指向不存在的平台时退回列表', () => {
     const view = panelView(snapshot(), { locale: 'zh' }, { focus: 'nope' });
-    assert.equal(view.children[0].type, 'chips', '退回列表时导航仍在');
+    assert.equal(view.children[0].type, 'tabs', '退回列表时页签仍在');
     const rows = flatten(view).filter(n => n.type === 'list').flatMap(n => n.items);
     assert.ok(rows.some(r => r.action && r.action.id === 'openProvider'), '应该看到平台卡片');
 });
 
 test('搜索是一个常显的扁输入框，走 onChange 而不是提交按钮', () => {
     const view = panelView(snapshot(), { locale: 'zh' });
-    const field = pageOf(view).find(n => n.type === 'textField');
+    const field = pageOf(view, 'agents').find(n => n.type === 'textField');
     assert.ok(field, '平台页顶部要有搜索框');
     assert.equal(field.bind, 'data.search.query');
     assert.equal(field.onChange.id, 'searchProviders');
-    assert.equal(pageOf(view).some(n => n.type === 'form'), false, '不要满宽提交按钮');
+    assert.equal(pageOf(view, 'agents').some(n => n.type === 'form'), false, '不要满宽提交按钮');
 });
 
 test('搜索关键词只留匹配的平台', () => {
@@ -430,23 +459,41 @@ test('商店段最底部是手输包名/链接的安装表单', () => {
     assert.equal(field.bind, 'data.install.spec');
 });
 
-test('设置页：显示偏好是四个带 bind 的 chips，并传给 panelData', async () => {
-    const view = panelView(snapshot(), { locale: 'zh' }, { page: 'settings' });
-    const chips = flatten(view).filter(n => n.type === 'chips' && typeof n.bind === 'string' && n.bind.startsWith('data.display.'));
-    const binds = chips.map(c => c.bind);
-    for (const want of ['data.display.strip', 'data.display.note', 'data.display.noteKind', 'data.display.models'])
-        assert.ok(binds.includes(want), `缺 ${want}`);
-    for (const chip of chips)
-        assert.equal(chip.onChange.id, 'setDisplay', '改显示偏好走 setDisplay');
+test('设置页：显示偏好四项都带 bind，控件类型随设备能力切换', async () => {
     const { panelData } = await import('../src/panel.js');
-    const data = panelData(snapshot(), 'zh', Date.now(), {
-        page: 'settings',
-        display: { strip: false, note: true, noteKind: 'quota', models: 'flat' },
-    });
-    assert.equal(data.display.strip, 'off');
-    assert.equal(data.display.note, 'on');
-    assert.equal(data.display.noteKind, 'quota');
-    assert.equal(data.display.models, 'flat');
+    const SWITCHES = ['toggle', 'chips'];
+    const WANTS = ['data.display.strip', 'data.display.note', 'data.display.noteKind', 'data.display.models'];
+    // 新设备（上报了 components）：布尔项走 toggle、多选项走 select。
+    const modern = flatten(pageOf(panelView(snapshot(), { locale: 'zh', components: ['tabs', 'toggle', 'select', 'chips'] }, { page: 'settings' }), 'settings'))
+        .filter(n => typeof n.bind === 'string' && WANTS.includes(n.bind));
+    assert.equal(modern.length, 4, '四项显示偏好都要有');
+    assert.equal(modern.find(n => n.bind === 'data.display.strip').type, 'toggle', '开关走 toggle');
+    assert.equal(modern.find(n => n.bind === 'data.display.noteKind').type, 'select', '二选一走 select');
+    // 没上报 components = 没有信息，不是「都不支持」。面板本来就依赖 v2 节点，
+    // 真不支持的话整页早就 broken 了，所以这里保持乐观、不降级。
+    const legacy = flatten(panelView(snapshot(), { locale: 'zh' }, { page: 'settings' }))
+        .filter(n => typeof n.bind === 'string' && WANTS.includes(n.bind));
+    assert.equal(legacy.length, 4, '四项显示偏好都要有');
+    assert.equal(legacy.find(n => n.bind === 'data.display.strip').type, 'toggle', '无信息时也走 toggle');
+    for (const node of [...modern, ...legacy])
+        assert.equal(node.onChange.id, 'setDisplay', '改显示偏好走 setDisplay');
+    // 反过来：设备明确说没有 toggle / select 时才退回 chips。
+    const basic = flatten(panelView(snapshot(), { locale: 'zh', components: ['text', 'list'] }, { page: 'settings' }))
+        .filter(n => typeof n.bind === 'string' && WANTS.includes(n.bind));
+    for (const node of basic)
+        assert.equal(node.type, 'chips', `设备只报 text/list 时 ${node.bind} 应退回 chips`);
+    // 绑定根的类型要跟控件对上：有 toggle 就给布尔，否则给 on/off。
+    const ui = { page: 'settings', display: { strip: false, note: true, noteKind: 'quota', models: 'flat' } };
+    const boolData = panelData(snapshot(), 'zh', Date.now(), ui, { components: ['toggle', 'select'] });
+    assert.equal(boolData.display.strip, false, 'toggle 的初值必须是布尔');
+    assert.equal(boolData.display.note, true);
+    assert.equal(boolData.display.noteKind, 'quota');
+    assert.equal(boolData.display.models, 'flat');
+    // 设备明确不含 toggle 时，控件退回 chips，数据也必须跟着给选项字符串 ——
+    // 两边用同一个 hasNode 判断，任何一侧单独变都会让开关 state 对不上。
+    const textData = panelData(snapshot(), 'zh', Date.now(), ui, { components: ['text', 'list'] });
+    assert.equal(textData.display.strip, 'off', 'chips 的初值必须是选项字符串');
+    assert.equal(textData.display.note, 'on');
 });
 
 test('设置页：密钥表单是两个输入框并排（grid），提交走 saveTokens', () => {

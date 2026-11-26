@@ -2,6 +2,32 @@
 
 本文件记录每个版本的变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 0.2.6 — 2026-11-26
+
+两件事：用量页的时间范围换成原生下拉，以及**账号在电脑和手机之间搬**。
+
+### 时间范围改下拉
+
+- 用量页原来是一排四个 chip，占掉半屏；换成 `select`（App 不认就退回 chips）。
+- 选中态改由宿主下发（`data.usage.period`）而不是读快照——`statsPeriod` 返回空数组、
+  不重建视图，两边读不同来源就会对不上。
+
+### 账号备份：电脑 ↔ 手机
+
+- 新增 `src/backup.js`：封印/解封与 magpie 原版**双向兼容**——`magpie-backup` envelope、
+  PBKDF2-SHA256 600000 轮、AES-256-GCM、AAD 里带版本号与轮数、authTag 追加在密文尾部。
+  用 Go 官方实现互相封印解封都验过（含中文口令、错口令、篡改一字节、非备份文件）。
+- 桌面端补 `POST backup/export`、`POST backup/import`、`POST backup/snapshot` 三个端点，
+  原版 UI 的「导出/导入」表单**零改动**即可用。返回值同时给大小写两套键：
+  Go 的 `Result` 没有 json tag、序列化是大写，而原版页面读的是小写。
+- 手机端加「设置 › 账号备份」：手机够不到 `/sdcard`（面板没有文件选择器节点、插件又跑在
+  proot 里），所以改成从电脑取——电脑封一份回给请求方，手机解封后写本机。
+- 地址填**带 token 的完整链接**并记住（口令不存）：DSH 对 `/magpie-hub/` 只认 cookie，
+  所以先拿 token 换 cookie 再发请求。
+- 401 与 403 分开解释：401 是 token 过期，403 是 DSH 只认自己 `--host` 绑的那个地址
+  （`--host 0.0.0.0` 会被直接拒绝），改哪一边说得清清楚楚。
+- 手机端只搬账号、不搬插件清单：手机 `node_modules` 是挑着装好的，把电脑那 20 条 spec
+  全写进来只会让每次启动都报「装载失败」。
 ## 0.2.5 — 2026-11-26
 
 手机端照搬了 [Hipple/dsh-go-magpie] 的四个手法，桌面端一行没动（网页端 UI 本来就是 magpie 原版）。

@@ -48,6 +48,8 @@ const STORE_PAGE = 8;
 const MAX_STORE_ROWS = 4;
 /** 插件页最多列多少个（11 个插件一屏能滚完，多了 list 也滚得动）。 */
 const MAX_PLUGIN_ROWS = 30;
+/** 时间窗白名单：视图的默认值与宿主的校验必须用同一份。 */
+const PERIODS = ['today', '7d', '30d', 'all'];
 const PERIOD_TODAY = 'today';
 const PERIOD_7D = '7d';
 const PERIOD_30D = '30d';
@@ -168,6 +170,7 @@ export const WORDS_ZH = {
     colModel: '模型',
     colStatus: '状态',
     colLatency: '耗时',
+    periodLabel: '时间范围',
     periodToday: '今天',
     period7d: '7天',
     period30d: '30天',
@@ -254,6 +257,21 @@ export const WORDS_ZH = {
     displayShowModels: '浏览模型',
     modelsEmpty: '还没有可展示的模型',
     modelsHint: '点平台名展开它的模型；模型名就是对话里选的那个。',
+    backupSection: '账号备份',
+    backupEntry: '从电脑导入账号',
+    backupEntryHint: '手机上没法选文件，所以改成从电脑直接取',
+    backupHint: '备份里有各平台的登录凭据，文件本身用口令加密。口令只在你和你的电脑之间传，不上网、不落日志。',
+    backupFromHostHint: '在电脑上打开 magpie 面板并随便选一个平台，把地址栏整行复制过来（末尾带 token=…）。口令填电脑上导出时用的那个，两台设备要在同一个 Wi-Fi 下。',
+    backupHost: '电脑地址',
+    backupHostPlaceholder: '192.168.1.10:5443/?token=…',
+    backupPass: '口令',
+    backupPassPlaceholder: '导出时设的那个口令',
+    backupFromHost: '从电脑导入',
+    backupNeedHost: '先填电脑地址，形如 192.168.1.10:5443',
+    backupNeedPass: '先填导出时设的口令',
+    backupRunning: '正在取备份…',
+    backupDone: (a, l) => `导入完成：账号 ${a} 个、订阅登录 ${l} 条`,
+    backupNothing: '这份备份里没有账号',
 
 };
 export const WORDS_EN = {
@@ -359,6 +377,7 @@ export const WORDS_EN = {
     colModel: 'Model',
     colStatus: 'Status',
     colLatency: 'Latency',
+    periodLabel: 'Time range',
     periodToday: 'Today',
     period7d: '7 days',
     period30d: '30 days',
@@ -444,6 +463,21 @@ export const WORDS_EN = {
     displayShowModels: 'Browse models',
     modelsEmpty: 'No models to show yet',
     modelsHint: 'Tap a provider to expand its models; the names are what you pick in a chat.',
+    backupSection: 'Account backup',
+    backupEntry: 'Import accounts from a computer',
+    backupEntryHint: 'No file picker on the phone, so the accounts come over the network',
+    backupHint: 'The backup holds every provider credential, sealed with a passphrase. The passphrase only travels between you and your computer — never logged.',
+    backupFromHostHint: 'On the computer open the magpie panel, pick any provider, and copy the whole address bar (it ends with token=…). Fill the same passphrase you exported with; both devices must be on the same Wi-Fi.',
+    backupHost: 'Computer address',
+    backupHostPlaceholder: '192.168.1.10:5443/?token=…',
+    backupPass: 'Passphrase',
+    backupPassPlaceholder: 'The one you set when exporting',
+    backupFromHost: 'Import from computer',
+    backupNeedHost: 'Fill the address first, like 192.168.1.10:5443',
+    backupNeedPass: 'Fill the passphrase you exported with',
+    backupRunning: 'Fetching the backup…',
+    backupDone: (a, l) => `Imported ${a} accounts and ${l} sign-ins`,
+    backupNothing: 'This backup has no accounts',
 
 };
 /** 只有以 `en` 开头才走英文；其余（含未给 locale）用中文。 */
@@ -780,6 +814,17 @@ export function panelView(snapshot, caps, ui) {
             children: modelsPage(snapshot, w, ui?.display ?? null),
         };
     }
+    // 账号备份页（从设置页的「从电脑导入账号」进来）。
+    if (ui?.backup === true) {
+        return {
+            v: VIEW_VERSION,
+            accent: 'app',
+            style: { gap: 'M' },
+            type: 'stack',
+            title: w.panelTitle,
+            children: backupPage(w, caps, ui?.backupState ?? null),
+        };
+    }
     const page = PAGES.includes(ui?.page) ? ui.page : PAGE_AGENTS;
     const query = typeof ui?.query === 'string' ? ui.query : '';
     return {
@@ -797,6 +842,7 @@ export function panelView(snapshot, caps, ui) {
             storeLimit: ui?.storeLimit ?? STORE_PAGE,
             display: ui?.display ?? null,
             checkin: ui?.checkin ?? null,
+            period: ui?.period ?? null,
         }),
     };
 }
@@ -838,7 +884,7 @@ function pageTabs(snapshot, page, query, w, ctx) {
             type: 'tabs',
             items: sections.map(s => ({
                 label: s.label,
-                children: pageBody(snapshot, s.page, query, w, ctx?.install, ctx?.update, ctx?.storeLimit ?? STORE_PAGE, ctx?.display ?? null, ctx?.checkin ?? null, ctx?.caps ?? null),
+                children: pageBody(snapshot, s.page, query, w, ctx?.install, ctx?.update, ctx?.storeLimit ?? STORE_PAGE, ctx?.display ?? null, ctx?.checkin ?? null, ctx?.caps ?? null, ctx?.period ?? null),
             })),
         }];
     }
@@ -855,7 +901,7 @@ function pageTabs(snapshot, page, query, w, ctx) {
             { label: w.navSettings, value: PAGE_SETTINGS },
         ],
         onChange: { id: 'switchPage' },
-    }, ...pageBody(snapshot, page, query, w, ctx?.install, ctx?.update, ctx?.storeLimit ?? STORE_PAGE, ctx?.display ?? null, ctx?.checkin ?? null, ctx?.caps ?? null)];
+    }, ...pageBody(snapshot, page, query, w, ctx?.install, ctx?.update, ctx?.storeLimit ?? STORE_PAGE, ctx?.display ?? null, ctx?.checkin ?? null, ctx?.caps ?? null, ctx?.period ?? null)];
 }
 /**
  * 这台设备支持某个视图节点吗。
@@ -967,12 +1013,12 @@ function normalizeUpdateStatus(raw, w) {
         return { text: w.pluginUpdateFailed(String(raw.error ?? w.metricNone)), tone: 'bad' };
     return null;
 }
-export function pageBody(snapshot, page, query, w, installStatus, updateStatus = null, storeLimit = STORE_PAGE, display = null, checkin = null, caps = null) {
+export function pageBody(snapshot, page, query, w, installStatus, updateStatus = null, storeLimit = STORE_PAGE, display = null, checkin = null, caps = null, period = null) {
     switch (page) {
         case PAGE_QUOTAS:
             return quotaTab(snapshot, w);
         case PAGE_USAGE:
-            return usageTab(snapshot, w);
+            return usageTab(snapshot, w, caps, period);
         case PAGE_PLUGINS:
         case PAGE_STORE:
             // 商店已并入插件页；旧状态里残留的 page=store 也渲染插件页，避免空白。
@@ -1304,6 +1350,57 @@ function modelsPage(snapshot, w, display = null) {
     children.push({ type: 'text', text: w.modelsHint, tone: 'muted' });
     return children;
 }
+/**
+ * 账号备份页（从设置页的「从电脑导入账号」进来）。
+ *
+ * 为什么不是「选文件」：手机上这条路是断的，两道墙都在 App 侧 ——
+ * ① 面板节点里没有文件选择器，`text` 也只能拿文本；
+ * ② 插件跑在 proot 里，绑定集只有 `/dev` `/proc` `/sys` `/system` `/apex`，
+ *    够不到 `/sdcard`，所以「用户把文件存到手机再选」也读不到。
+ * 改 App 才有解，而那是不能动的（重建 APK）。
+ *
+ * 于是走网络：电脑那边同一个插件已经能导出（`backup/export`），
+ * 再借一条 `backup/snapshot` 把封好的字节回给请求方，手机这边取回来解封即可。
+ * 口令由用户在两端各填一次，文件始终是加密状态。
+ */
+function backupPage(w, caps = null, backup = null) {
+    return [
+        // 整页替换时 App 标题栏会盖住最顶上一条，返回行会落到点不到的位置。
+        { type: 'text', text: ' ' },
+        {
+            type: 'list',
+            items: [{ title: `‹ ${w.navSettings}`, icon: 'collapse', action: 'closeBackup' }],
+        },
+        { type: 'text', text: `**${w.backupSection}**` },
+        { type: 'text', text: w.backupHint, tone: 'muted' },
+        // 状态行：后台导入的结果只能靠数据回推（action 同步返回时还没有结果）。
+        { type: 'text', text: { $: 'data.backup.status' }, tone: 'muted' },
+        { type: 'text', text: `**${w.backupFromHost}**` },
+        { type: 'text', text: w.backupFromHostHint, tone: 'muted' },
+        {
+            type: 'form',
+            submit: 'importFromHost',
+            submitLabel: w.backupFromHost,
+            children: [
+                {
+                    type: 'textField',
+                    label: w.backupHost,
+                    bind: 'data.backup.host',
+                    placeholder: w.backupHostPlaceholder,
+                    lines: 1,
+                },
+                {
+                    type: 'textField',
+                    label: w.backupPass,
+                    bind: 'data.backup.pass',
+                    placeholder: w.backupPassPlaceholder,
+                    lines: 1,
+                },
+            ],
+        },
+    ];
+}
+
 function settingsPage(snapshot, w, display = null, checkin = null, caps = null) {
     const providers = Array.isArray(snapshot.providers) ? snapshot.providers : [];
     const accounts = providers.reduce((sum, p) => sum + (Array.isArray(p.accounts) ? p.accounts.length : 0), 0);
@@ -1390,6 +1487,17 @@ function settingsPage(snapshot, w, display = null, checkin = null, caps = null) 
                     title: w.displayShowModels,
                     icon: 'model',
                     action: 'showModels',
+                }],
+        },
+        // 账号备份：与桌面端「设置 › 同步与备份」对应的一行入口。
+        // 手机上只能从电脑取（面板没有文件选择器），所以页面里只做导入。
+        {
+            type: 'list',
+            items: [{
+                    title: w.backupEntry,
+                    subtitle: w.backupEntryHint,
+                    icon: 'download',
+                    action: 'openBackup',
                 }],
         },
         // 私密仓库的凭据。**放设置页而不是商店页**：认证明明是一次性配置，
@@ -2043,7 +2151,7 @@ function remainingTone(percent) {
  * 给每个子项 `_minWidth` 220，横排塞不下四个），四个单选若放顶部会吃掉
  * 约 350 px，把真正要看的数字推到第二屏。放到底部后首屏直接是数字。
  */
-function usageTab(snapshot, w) {
+function usageTab(snapshot, w, caps = null, period = null) {
     // 快照还没就绪（或构建失败）时 stats 是 undefined —— 五页现在同时渲染，
     // 这里必须能容忍空数据，否则整个面板一起崩。
     const stats = snapshot?.stats ?? {};
@@ -2052,6 +2160,11 @@ function usageTab(snapshot, w) {
         ? stats.byProvider.slice().sort((a, b) => b.tokens - a.tokens).slice(0, MAX_USAGE_ROWS)
         : [];
     const cacheText = cacheHitText(stats);
+    // 时间窗：宿主的 `period` 变量是真相源（刚被 `statsPeriod` 改过的那一个），
+    // 快照里的 `stats.period` 是它上一次 refresh 时的回填值。两者都不可信时才回落到今天。
+    const activePeriod = PERIODS.includes(period) ? period
+        : PERIODS.includes(stats.period) ? stats.period
+            : PERIOD_TODAY;
     return [
         // 四个指标分两行两列。`row` 按「最宽子组件」算一行放几个，四个 metric
         // 挤一行时每个只剩约 60dp，数字会被截断成 `12.3…`。
@@ -2100,17 +2213,24 @@ function usageTab(snapshot, w) {
                         isFiniteNumber(row.avgTtftMs) ? `${Math.round(row.avgTtftMs)} ms` : w.metricNone,
                     ]),
                 }]),
-        {
-            type: 'options',
-            id: 'statsPeriod',
-            selected: stats.period,
+        // 时间窗：支持 select 就是原生下拉（一行，宽度撑满），否则退回 chips。
+        // 之前用的是 `options`（四个内联按钮），四个中文标签挤一行会换行、
+        // 把「全部」推到第二行，看起来像两个控件。
+        // 选中态必须靠 `bind` 下发：带 bind 的控件 `value` 会被 App 改写成
+        // `{$: bind}`（`DshUiInputBindings`），只看 `value` 会永远停在第一项。
+        choiceField({
+            label: w.periodLabel,
+            bind: 'data.usage.period',
+            value: activePeriod,
             options: [
                 { label: w.periodToday, value: PERIOD_TODAY },
                 { label: w.period7d, value: PERIOD_7D },
                 { label: w.period30d, value: PERIOD_30D },
                 { label: w.periodAll, value: PERIOD_ALL },
             ],
-        },
+            onChange: { id: 'statsPeriod' },
+            caps,
+        }),
         solidButton(w.refresh, 'refreshStats'),
         // 请求记录属于「观测」，跟用量放一处；它是空表时只占一行标题。
         { type: 'text', text: `**${w.sectionRouting}**` },
@@ -2177,6 +2297,13 @@ export function panelData(snapshot, locale, now, ui, caps = null) {
         search: {
             query: typeof ui?.query === 'string' ? ui.query : '',
         },
+        // 用量页时间窗下拉的绑定根。缺了它那段 `bind` 解析不到，
+        // 控件会失去初值（看起来像永远选中第一项）。
+        usage: {
+            period: PERIODS.includes(ui?.period) ? ui.period
+                : PERIODS.includes(snapshot?.stats?.period) ? snapshot.stats.period
+                    : PERIOD_TODAY,
+        },
         install: {
             spec: typeof ui?.spec === 'string' ? ui.spec : '',
         },
@@ -2206,6 +2333,14 @@ export function panelData(snapshot, locale, now, ui, caps = null) {
         // 面板按设备能力在两者间切换（`boolSwitch`），这里跟着切。
         checkin: {
             auto: boolOf(ui?.checkin?.auto === true, caps),
+        },
+        // 备份页那两个输入框的绑定根。口令与地址都**不回显**：口令回显等于
+        // 把明文塞进每一帧面板数据，地址回显没有意义（用户刚打完就在眼前）。
+        // `status` 是后台导入的结果行，只能靠数据推送。
+        backup: {
+            host: typeof ui?.backupHost === 'string' ? ui.backupHost : '',
+            pass: '',
+            status: typeof ui?.backupStatus === 'string' ? ui.backupStatus : '',
         },
         display: {
             strip: boolOf(ui?.display?.strip !== false, caps),

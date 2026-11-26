@@ -44,6 +44,7 @@ import { currentScope } from './scope.js';
 import { AuthStore, PluginStore, SettingsStore, hostPaths } from './store.js';
 import { PolicyStore } from './state.js';
 import { registerUi } from './ui.js';
+import { applyAccounts, open as openBackup } from './backup.js';
 import { makeUiHandlers } from './ui-api.js';
 import { whoOf } from './types.js';
 export const name = 'magpie-hub';
@@ -100,6 +101,16 @@ let checkinAuto = false;
 let display = { ...DISPLAY_DEFAULTS };
 /** 模型页是否打开（从设置页「浏览模型」进来，不占页签）。 */
 let modelsOpen = false;
+/**
+ * 账号备份页是否在前台（与 `modelsOpen` 同一套「refresh 换视图」的做法）。
+ */
+let backupOpen = false;
+/** 上次填的电脑地址（留在内存里，退出面板不丢，换设备也看得见自己填过什么）。 */
+let backupHost = '';
+/** 备份页的状态行。后台任务只能靠数据回推，所以存成字符串由 `panelData` 下发。 */
+let backupStatus = '';
+/** 同一时刻只允许一次导入：重复点会把同一份凭据写两遍。 */
+let backupBusy = false;
 /** 把 `hub-settings.json` 里可能残缺/非法的 `display` 收成一份能用的。 */
 function readDisplay(raw) {
     const out = { ...DISPLAY_DEFAULTS };
@@ -752,6 +763,9 @@ export function apply(ctx) {
     void settings.all().then((all) => {
         tokenDraft = { github: typeof all?.tokens?.github === 'string' ? all.tokens.github : '', npm: typeof all?.tokens?.npm === 'string' ? all.tokens.npm : '' };
         display = readDisplay(all?.display);
+        // 地址记下来（口令不记）：那串带 token 的链接有七十来个字符，
+        // 手机上每次重打一遍不现实。
+        backupHost = typeof all?.backup?.host === 'string' ? all.backup.host : '';
         checkinAuto = all?.checkinAuto === true;
         market.setTokens(all?.tokens);
     }).catch(() => { });
@@ -778,6 +792,9 @@ export function apply(ctx) {
         setCheckinAuto: async (enabled) => { await checkinSchedule(enabled); },
         // 用量流水（桌面「请求」页签与热力图读它）：内存里的最近 500 条调用记录
         usageRows: () => records,
+        // 导入备份时顺手把缺的插件装上（只登记 `plugins.json` 不够：包不在
+        // `plugins/node_modules` 下，装载阶段根本找不到它）
+        installOne: (spec, locale, force) => installOne(spec, locale, force),
         /**
          * 平台自检（桌面「测试」按钮）：在某平台上真发一次最小请求。
          *
@@ -927,6 +944,10 @@ export function apply(ctx) {
                 display,
                 models: modelsOpen,
                 checkin: { auto: checkinAuto },
+                period,
+                backup: backupOpen,
+                backupHost,
+                backupStatus,
             }),
             data: (_scope, emit, caps) => {
                 let last;
@@ -941,6 +962,9 @@ export function apply(ctx) {
                         plugin: focusedPlugin,
                         display,
                         checkin: { auto: checkinAuto },
+                        period,
+                        backupHost,
+                        backupStatus,
                     }, caps);
                     const json = JSON.stringify(data);
                     if (json === last)
@@ -1113,6 +1137,28 @@ export function apply(ctx) {
                 closeModels: () => {
                     modelsOpen = false;
                     return [{ type: 'refresh', id: PANEL_ID }];
+                },
+                /** 打开账号备份页（设置页里的入口）。 */
+                openBackup: () => {
+                    backupOpen = true;
+                    return [{ type: 'refresh', id: PANEL_ID }];
+                },
+                /** 备份页返回设置。 */
+                closeBackup: () => {
+                    backupOpen = false;
+                    return [{ type: 'refresh', id: PANEL_ID }];
+                },
+                /**
+                 * 从电脑拉一份账号备份并导入。
+                 *
+                 * 表单提交，所以地址与口令从 `args.values` 里按 bind 路径取（
+                 * `actions` 的 PluginAction 不带控件值）。
+                 */
+                importFromHost: (_scope, event) => {
+                    const values = event?.value?.values ?? {};
+                    const host = typeof values['data.backup.host'] === 'string' ? values['data.backup.host'].trim() : '';
+                    const pass = typeof values['data.backup.pass'] === 'string' ? values['data.backup.pass'] : '';
+                    return startImportFromHost(host, pass, event?.locale);
                 },
                 /** 点放大镜图标：把搜索框展开。 */
                 openSearch: () => {
@@ -1792,6 +1838,89 @@ export function apply(ctx) {
      * 只比 npm 包：GitHub 源没有版本号，读不到 package.json 的也跳过——
      * 宁可少报，不要凭空说「有新版本」。
      */
+    /**
+     * 从电脑那一侧的同一个插件取一份账号备份，解封后写进本机的 magpie 数据。
+     *
+     * 为什么不走文件：手机这条路两处都断——面板节点没有文件选择器，插件又跑在
+     * proot 里够不到 `/sdcard`。所以借 `backup/snapshot` 把封好的字节从电脑取回来。
+     *
+     * 地址要填**带 token 的完整链接**（电脑上打开 magpie 面板后地址栏里那一串）：
+     * DSH 对 `/magpie-hub/` 只认 cookie 不认裸 token，所以先拿 token 换 cookie，
+     * 再带着 cookie 发请求。地址没写协议就补 `http://`。
+     */
+    function startImportFromHost(host, pass, locale) {
+        const at = typeof host === 'string' ? host.trim() : '';
+        if (at === '')
+            return [{ type: 'toast', text: text(locale, '先填电脑地址，形如 192.168.1.10:5443/?token=…', 'Fill the address first, like 192.168.1.10:5443/?token=…') }];
+        if (typeof pass !== 'string' || pass === '')
+            return [{ type: 'toast', text: text(locale, '先填导出时设的口令', 'Fill the passphrase you exported with') }];
+        if (backupBusy)
+            return [{ type: 'toast', text: text(locale, '正在取备份…', 'Fetching the backup…') }];
+        let url;
+        try {
+            url = new URL(/^https?:\/\//i.test(at) ? at : `http://${at}`);
+        }
+        catch {
+            return [{ type: 'toast', text: text(locale, '这个地址看起来不对', 'That address looks wrong') }];
+        }
+        const origin = url.origin;
+        const token = url.searchParams.get('token') ?? '';
+        backupHost = at;
+        backupBusy = true;
+        backupStatus = text(locale, '正在取备份…', 'Fetching the backup…');
+        notify();
+        void (async () => {
+            let cookie = '';
+            if (token !== '') {
+                // 不跟重定向：303 本身就是「cookie 在这儿了」的信号。
+                const hello = await fetch(`${origin}/?token=${encodeURIComponent(token)}`, { redirect: 'manual' });
+                const jar = typeof hello.headers.getSetCookie === 'function' ? hello.headers.getSetCookie() : [];
+                const single = hello.headers.get('set-cookie');
+                const parts = jar.length > 0 ? jar : single === null ? [] : [single];
+                cookie = parts.map((c) => String(c).split(';')[0]).filter((c) => c !== '').join('; ');
+            }
+            const res = await fetch(`${origin}/magpie-hub/api/backup/snapshot`, {
+                method: 'POST',
+                headers: {
+                    'content-type': 'application/json',
+                    ...(cookie === '' ? {} : { cookie }),
+                },
+                body: JSON.stringify({ pass }),
+            });
+            // 401 与 403 是两件事：401 是 cookie 没换成（token 过期），403 是 DSH
+            // 根本不认这个地址 —— 它只接自己 `--host` 绑的那个 IP，别的 Host 一律
+            // 挡掉。分开说，用户才知道该改哪一边。
+            if (res.status === 401)
+                throw new Error(text(locale, '链接里的 token 过期了：回电脑上把地址栏整行重新复制一次', 'The token expired — copy the whole address bar again'));
+            if (res.status === 403)
+                throw new Error(text(locale, `电脑只认 ${origin} 这个地址：在电脑上用 --host 加你电脑的局域网 IP 重新启动一次`, `The computer only answers ${origin}: restart it with --host and your LAN IP`));
+            if (!res.ok)
+                throw new Error(text(locale, `电脑那边返回 ${res.status}`, `The computer answered ${res.status}`));
+            const payload = await res.json();
+            const encoded = typeof payload?.data === 'string' ? payload.data : '';
+            if (encoded === '')
+                throw new Error(text(locale, '电脑那边没有给出备份内容', 'The computer sent no backup'));
+            const bundle = openBackup(Buffer.from(encoded, 'base64'), pass);
+            // 只搬账号，不搬插件清单：手机这边的 node_modules 是挑着装好的，
+            // 把电脑那 20 条 spec 全写进来会让每次启动都报「装载失败」。
+            const summary = await applyAccounts(paths.root, bundle, { plugins: false });
+            await reload();
+            await refresh(true);
+            const total = summary.accounts + summary.logins;
+            void settings.set('backup', { host: at }).catch(() => { });
+            backupStatus = total === 0
+                ? text(locale, '这份备份里没有账号', 'This backup has no accounts')
+                : text(locale, `导入完成：账号 ${summary.accounts} 个、订阅登录 ${summary.logins} 条`, `Imported ${summary.accounts} accounts and ${summary.logins} sign-ins`);
+        })()
+            .catch((e) => {
+            backupStatus = e instanceof Error ? e.message : String(e);
+        })
+            .finally(() => {
+            backupBusy = false;
+            notify();
+        });
+        return [{ type: 'toast', text: backupStatus }];
+    }
     function startUpdateCheck(locale) {
         if (updateStatus?.state === 'running') {
             return [{ type: 'toast', text: text(locale, '正在检查更新…', 'Checking for updates…') }];

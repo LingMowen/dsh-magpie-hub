@@ -1,6 +1,6 @@
 {
   "name": "dsh-magpie-hub",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "DeepSeek Harness 插件：在 DSH 进程内直接运行 magpie 供应商插件（登录 / 模型目录 / 请求转发 / 额度 / 签到 / 商店），双端共用一套面板",
   "keywords": [
     "dsh",

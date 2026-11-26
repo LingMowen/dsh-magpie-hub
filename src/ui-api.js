@@ -13,8 +13,39 @@
  * ⚠ `state` 的形状按 magpie 的 `stateJSON`（internal/gui/api.go:289）给，
  * 字段名和嵌套必须一致，否则 app.js 在启动时就会读 undefined。
  */
-import { readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { BACKUP_EXT, CorruptBackupError, NotBackupError, PassphraseError, applyAccounts, collectAccounts, open as openBackup, seal } from './backup.js';
+
+/**
+ * 导出文件落地的目录：用户的「下载」文件夹。
+ *
+ * 与 magpie 的 `downloads()` 同一个地方 —— 桌面用户在文件管理器里点一下就能拿到，
+ * 不用去翻插件的私有目录。目录不存在时建一个（某些精简过的 Windows 镜像没有）。
+ */
+async function downloadsDir() {
+    const dir = join(homedir(), 'Downloads');
+    await mkdir(dir, { recursive: true }).catch(() => { });
+    return dir;
+}
+
+/**
+ * 把解封失败的三种原因翻成三句不同的话。
+ *
+ * 页面只显示 `error.message`，所以这里直接给中文；三句必须能区分开——
+ * 「口令错了」「这不是备份文件」「文件坏了」对应三种完全不同的下一步动作
+ * （重输口令 / 换文件 / 重新导出），混成一句用户就无从下手。
+ */
+function importFailure(e) {
+    if (e instanceof PassphraseError)
+        return "口令不对：这个文件是用另一个口令加密的";
+    if (e instanceof NotBackupError)
+        return "这不是 magpie 的备份文件";
+    if (e instanceof CorruptBackupError)
+        return "备份文件已损坏，请重新导出一份";
+    return e instanceof Error ? e.message : String(e);
+}
 
 /** magpie 的 settings.json（只读，用于让页面拿到语言/主题等）。 */
 async function readMagpieSettings(root) {
@@ -1263,6 +1294,139 @@ export function makeUiHandlers(deps) {
          * 但回 501 会在控制台留一条红字，所以显式给空对象。
          */
         davsync: async () => ({}),
+        /**
+         * 导出账号（Settings › 同步与备份 → 导出）。
+         *
+         * 与 magpie 的 `POST /api/backup/export` 同一条路径、同一份文件格式
+         * （见 `src/backup.js` 的说明），所以导出的文件在真正的 magpie 上也能
+         * 导入，反过来也一样。差别只在**装什么**：这里只装「账号」——各平台
+         * 的凭据（`plugin-auth.json`）、订阅类账号（`logins.json`），外加一份
+         * 插件清单（自定义键 `hubPlugins`，magpie 读到会忽略）。
+         *
+         * 不带供应商配置：那是「这台机器上配了哪些模型入口」，与「我的账号」
+         * 是两件事，混在一起导到手机上会多出一堆用不到的空供应商。
+         *
+         * 入参用小写 `pass`（桌面 UI 的 `exportForm` 就发小写；Go 那边靠
+         * `encoding/json` 的大小写不敏感匹配吃掉了这个差异，我们得自己认）。
+         */
+        'backup/export': async (_req, body) => {
+            const pass = typeof body?.pass === 'string' ? body.pass : '';
+            if (pass === '')
+                throw new Error('请设置一个口令：备份文件用它加密');
+            const bundle = await collectAccounts(deps.root, { app: 'dsh-magpie-hub' });
+            const data = seal(bundle, pass);
+            const dir = await downloadsDir();
+            const stamp = new Date().toISOString().slice(0, 10);
+            // 与上游一样：同一天多次导出不覆盖前一份，加 -2、-3
+            let file = join(dir, `magpie-${stamp}${BACKUP_EXT}`);
+            for (let i = 2; i < 100; i += 1) {
+                try {
+                    await readFile(file);
+                }
+                catch {
+                    break;
+                }
+                file = join(dir, `magpie-${stamp}-${i}${BACKUP_EXT}`);
+            }
+            await writeFile(file, data);
+            const accounts = Object.keys(bundle.signIns?.plugins ?? {}).length;
+            const logins = Array.isArray(bundle.signIns?.logins) ? bundle.signIns.logins.length : 0;
+            // 形状照 `internal/gui/backup.go` 的返回给全：页面会读 path 与 signIns
+            return {
+                path: file,
+                providers: 0,
+                profiles: 0,
+                agents: 0,
+                library: false,
+                signIns: accounts + logins,
+                accounts,
+                logins,
+                plugins: Array.isArray(bundle.hubPlugins?.plugins) ? bundle.hubPlugins.plugins.length : 0,
+                bytes: data.length,
+            };
+        },
+        /**
+         * 把一份刚封好的备份回给**对端**（手机端「从电脑导入」用）。
+         *
+         * 与 `backup/export` 的唯一区别是输出方向：那边写进下载文件夹给本机用户，
+         * 这边把字节 base64 回给请求方。数据、口令、加密方式完全相同，所以对端
+         * 拿到的就是一份能直接 `open()` 的信封。
+         *
+         * 为什么不让对端自己去读文件：手机那侧跑在容器里，够不到电脑的下载目录。
+         * 口令由调用方给（对端要用它解开），本机不落盘、不记日志。
+         */
+        'backup/snapshot': async (_req, body) => {
+            const pass = typeof body?.pass === 'string' ? body.pass : '';
+            if (pass === '')
+                throw new Error('请设置一个口令：备份文件用它加密');
+            const bundle = await collectAccounts(deps.root, { app: 'dsh-magpie-hub' });
+            const data = seal(bundle, pass);
+            const accounts = Object.keys(bundle.signIns?.plugins ?? {}).length;
+            const logins = Array.isArray(bundle.signIns?.logins) ? bundle.signIns.logins.length : 0;
+            return {
+                data: data.toString('base64'),
+                bytes: data.length,
+                accounts,
+                logins,
+                plugins: Array.isArray(bundle.hubPlugins?.plugins) ? bundle.hubPlugins.plugins.length : 0,
+            };
+        },
+        /**
+         * 导入账号（Settings › 同步与备份 → 导入）。
+         *
+         * `data` 是文件字节的 base64（桌面 UI 的 `importForm` 就是这么发的：
+         * 注释里写着「as base64 in JSON: the app's web view drops a File sent
+         * as the body」）。
+         *
+         * 返回的键名同时给大小写两套：Go 的 `Result` 没有 json tag，序列化出来
+         * 是 `Added`/`SignIns`，而页面 `signInsSaid` 读的是 `r.added`（上游
+         * 自己也因此恒显示 0）。两套都给，哪种读法都能拿到数。
+         */
+        'backup/import': async (_req, body) => {
+            const encoded = typeof body?.data === 'string' ? body.data : '';
+            if (encoded === '')
+                throw new Error('先选一个备份文件');
+            const pass = typeof body?.pass === 'string' ? body.pass : '';
+            let bundle;
+            try {
+                bundle = openBackup(Buffer.from(encoded, 'base64'), pass);
+            }
+            catch (e) {
+                // 口令错、不是备份、被改过 —— 对用户是三句不同的话，别混成一句
+                throw new Error(importFailure(e));
+            }
+            const summary = await applyAccounts(deps.root, bundle, {
+                install: typeof deps.installOne === 'function'
+                    ? (spec) => deps.installOne(spec, undefined, false)
+                    : undefined,
+            });
+            await deps.reload?.();
+            await deps.refresh?.();
+            const signIns = {
+                Added: summary.accounts + summary.logins,
+                Updated: 0,
+                Kept: 0,
+                added: summary.accounts + summary.logins,
+                updated: 0,
+                kept: 0,
+            };
+            return {
+                Added: summary.accounts,
+                Replaced: 0,
+                Profiles: 0,
+                Agents: 0,
+                NeedKey: [],
+                Skipped: [],
+                Plugins: summary.missing,
+                PluginErrors: {},
+                Library: false,
+                SignIns: signIns,
+                accounts: summary.accounts,
+                logins: summary.logins,
+                plugins: summary.plugins,
+                missing: summary.missing,
+            };
+        },
         /**
          * 自动备份列表（Settings › 同步与备份 → 自动备份）。
          *

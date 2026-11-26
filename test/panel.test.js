@@ -262,19 +262,35 @@ test('到期时间翻成人话，不吐 ISO 串', () => {
     assert.ok(/还有 \d+ 天|月\d+日到期|已到期/.test(all), `应出现人话时间，实际：${all}`);
 });
 
-test('用量页：周期选择在数字之后（首屏直接是数据）', () => {
+test('用量页：时间范围是下拉框，且排在指标之后', () => {
     const view = panelView(snapshot(), { locale: 'zh' }, { page: 'usage' });
     const usage = pageOf(view, 'usage');
     const first = usage[0];
     assert.equal(first.type, 'row', '第一块应该是指标');
     const flat = flatten(usage);
     const types = flat.map(n => n.type);
-    const optionIndex = types.indexOf('options');
+    // 支持 select 就用原生下拉；不支持退回 chips。两者形状一致，只换 type。
+    const pickIndex = Math.max(types.indexOf('select'), types.indexOf('chips'));
     const lastMetricIndex = types.lastIndexOf('metric');
-    assert.ok(optionIndex > 0, '应有周期选择');
+    assert.ok(pickIndex > 0, '应有时间范围选择');
     assert.ok(lastMetricIndex >= 0, '应有指标卡');
-    assert.ok(optionIndex > lastMetricIndex, 'options 应排在指标之后');
-    assert.equal(flat[optionIndex].id, 'statsPeriod');
+    assert.ok(pickIndex > lastMetricIndex, '时间范围应排在指标之后');
+    const pick = flat[pickIndex];
+    assert.equal(pick.label, '时间范围');
+    // 选中态必须靠 bind 下发：带 bind 的控件 value 会被 App 改写成 {$: bind}
+    assert.equal(pick.bind, 'data.usage.period');
+    assert.equal(pick.onChange.id, 'statsPeriod');
+    assert.deepEqual(pick.options.map(o => o.value), ['today', '7d', '30d', 'all']);
+});
+
+test('用量页：时间范围的选中态来自 ui.period', () => {
+    const view = panelView(snapshot(), { locale: 'zh' }, { page: 'usage', period: '30d' });
+    const pick = flatten(pageOf(view, 'usage')).find(n => n.type === 'select' || n.type === 'chips');
+    assert.equal(pick.value, '30d');
+    // 宿主没给（或给了非法值）时回落到今天
+    const fallback = flatten(pageOf(panelView(snapshot(), { locale: 'zh' }, { page: 'usage' }), 'usage'))
+        .find(n => n.type === 'select' || n.type === 'chips');
+    assert.equal(fallback.value, 'today');
 });
 
 test('没有数据的指标显示「暂无」，真 0 显示 0', () => {
@@ -585,4 +601,33 @@ test('今天已签的账号不再进批量入口', () => {
     const buttons = flatten(view).filter((n) => n.type === 'actions').flatMap((n) => n.items);
     assert.ok(!buttons.some((b) => b.action?.id === 'checkin' && b.action?.args?.key === undefined), '全签完了就不该再有批量按钮');
     assert.ok(visibleTexts(view).some((t) => t.includes('今天已签')), '状态要显示已签');
+});
+
+test('账号备份页：一个表单两项输入，返回设置', () => {
+    const view = panelView(snapshot(), { locale: 'zh' }, { page: 'settings', backup: true });
+    const nodes = flatten(view);
+    const forms = nodes.filter((n) => n.type === 'form');
+    assert.equal(forms.length, 1, '只有一个表单：地址 + 口令一起提交');
+    assert.equal(forms[0].submit, 'importFromHost');
+    const inputs = nodes.filter((n) => n.type === 'textField');
+    assert.deepEqual(inputs.map((i) => i.bind), ['data.backup.host', 'data.backup.pass'], '口令与地址各有自己的绑定根');
+    assert.ok(inputs.every((i) => typeof i.label === 'string' && i.label !== ''), 'App 要求 label 必填');
+    const rows = nodes.filter((n) => n.type === 'list').flatMap((n) => n.items);
+    assert.ok(rows.some((r) => r.action === 'closeBackup'), '要能退回设置');
+});
+
+test('账号备份页：设置页有入口，且 data 里给出绑定根', async () => {
+    const { panelData } = await import('../src/panel.js');
+    const settings = panelView(snapshot(), { locale: 'zh' }, { page: 'settings' });
+    const rows = flatten(settings).filter((n) => n.type === 'list').flatMap((n) => n.items);
+    assert.ok(rows.some((r) => r.action === 'openBackup'), '设置页要有「从电脑导入账号」的路');
+    // 绑定根必须存在且是字符串：带 bind 的控件 value 会被 App 改写成
+    // `{$: bind}`，初值只能靠这里下发。
+    const data = panelData(snapshot(), 'zh', 0, { backupHost: '192.168.1.10:5443', backupStatus: '正在取备份…' });
+    assert.equal(data.backup.host, '192.168.1.10:5443');
+    assert.equal(data.backup.pass, '', '口令不回显：每一帧都吐明文等于把口令留在内存里');
+    assert.equal(data.backup.status, '正在取备份…');
+    const blank = panelData(snapshot(), 'zh', 0, {});
+    assert.equal(blank.backup.host, '');
+    assert.equal(blank.backup.status, '');
 });

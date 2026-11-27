@@ -345,24 +345,31 @@ test('诊断信息在设置页，平台页只给下一步去哪', () => {
 });
 
 
-test('平台页是一列卡片，点卡片进详情（openProvider 带平台 id）', () => {
+test('平台页每个平台一个默认展开的折叠块，块里有进详情的入口', () => {
     const view = panelView(snapshot(), { locale: 'zh' });
-    const rows = pageOf(view, 'agents').flatMap(n => (n.type === 'list' ? n.items : []));
-    const card = rows.find(r => r.action && r.action.id === 'openProvider');
-    assert.ok(card, '平台要以可点的卡片出现');
-    assert.equal(card.action.args.provider, 'wps-lingxi');
-    assert.match(card.title, /WPS 灵犀/);
-    assert.match(card.subtitle, /账号/);
+    const page = pageOf(view, 'agents');
+    // 平台与账号是一张表：折叠块的 label 就是「平台名 · N 账号 · 剩余额度」，
+    // 展开就是这家平台的全部账号，末尾一行「额度与签到」进详情页。
+    const block = flatten(page).find(n => n.type === 'collapsible');
+    assert.ok(block, '平台要以折叠块出现');
+    assert.equal(block.expanded, true, '默认要摊开：一眼看到账号');
+    assert.match(block.label, /WPS 灵犀/);
+    assert.match(block.label, /1 账号/);
+    const rows = flatten(block).filter(n => n.type === 'list').flatMap(n => n.items);
+    const enter = rows.find(r => r.action && r.action.id === 'openProvider');
+    assert.ok(enter, '折叠块里要有进详情的入口');
+    assert.equal(enter.action.args.provider, 'wps-lingxi');
+    // 账号行直接在这一屏，不用点进去
+    const account = rows.find(r => r.action && r.action.id === 'toggleAccountHidden');
+    assert.ok(account, '账号行要在平台页直接可见');
+    assert.equal(account.title, 'wps-1234567890', '默认原文显示');
 });
-
-test('卡片右侧额度摘要只写剩 N，不写已用', () => {
+test('折叠块标题带额度摘要，只写剩 N 不写已用', () => {
     const view = panelView(snapshot(), { locale: 'zh' });
-    const rows = pageOf(view, 'agents').flatMap(n => (n.type === 'list' ? n.items : []));
-    const card = rows.find(r => r.action && r.action.id === 'openProvider');
-    assert.match(card.trailing, /剩/);
-    assert.equal(card.trailing.includes('已用'), false);
+    const block = flatten(pageOf(view, 'agents')).find(n => n.type === 'collapsible');
+    assert.match(block.label, /剩/);
+    assert.equal(block.label.includes('已用'), false);
 });
-
 test('详情视图有返回行，且用 collapse 图标（App 没有左箭头图标）', () => {
     const view = panelView(snapshot(), { locale: 'zh' }, { focus: 'wps-lingxi' });
     const rows = flatten(view).filter(n => n.type === 'list').flatMap(n => n.items);
@@ -396,8 +403,7 @@ test('搜索关键词只留匹配的平台', () => {
         ],
     });
     const view = panelView(two, { locale: 'zh' }, { query: 'catpaw' });
-    const names = flatten(view).filter(n => n.type === 'list').flatMap(n => n.items)
-        .filter(r => r.action && r.action.id === 'openProvider').map(r => r.title);
+    const names = flatten(view).filter(n => n.type === 'collapsible').map(n => n.label);
     assert.equal(names.length, 1);
     assert.match(names[0], /CatPaw/);
 });

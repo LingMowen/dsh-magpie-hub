@@ -119,6 +119,8 @@ export const WORDS_ZH = {
     signInKept: '登录有效',
     signInRenewed: '已续期',
     signInUnknown: '登录态未知',
+    accountShow: '显示',
+    providerEnter: '额度与签到',
     errDpapi: '这个账号的登录是在 Windows 电脑上保存的，手机上打不开。请在手机上重新登录一次。',
     errNetwork: '连不上服务器，检查网络后重试。',
     errGeneric: '这个账号读不出来，可能需要在手机上重新登录。',
@@ -328,6 +330,8 @@ export const WORDS_EN = {
     signInKept: 'Signed in',
     signInRenewed: 'Renewed',
     signInUnknown: 'Sign-in unknown',
+    accountShow: 'Show',
+    providerEnter: 'Quotas and check-in',
     errDpapi: 'This account was signed in on a Windows PC, so the phone cannot open it. Please sign in again on the phone.',
     errNetwork: 'Cannot reach the server. Check your network and retry.',
     errGeneric: 'This account cannot be read; you may need to sign in again on the phone.',
@@ -1650,14 +1654,48 @@ function agentTab(snapshot, w, query = '') {
     }
     // 页顶不再报「N 个平台 · N 个账号 · N 个模型」：每张卡片的副标题已经写了
     // 账号与模型数，页顶再报一遍只是把卡片往下推（用户「删掉没必要的文字」）。
-    const cards = [];
+    // 平台与账号**一张表**：每个平台一个折叠块，label 是
+    // 「平台名 · N 账号 · 剩余额度」，展开就是这家平台的全部账号。
+    //
+    // 之前是「平台卡片 list → 点进去才看到账号」两层：手机上要跳一次页才
+    // 知道自己有几个账号、哪个该重新登录。桌面 magpie 是一屏摊开的，这里对齐。
+    // label 上限 200 字（`_pluginControlContainer` 的 `_clip`），够写三个字段。
     for (const provider of shown) {
         const cardError = errorCallout(provider.error, w, provider.name);
         if (cardError !== undefined)
             children.push(cardError);
-        cards.push(providerCard(snapshot, provider, w));
+        const accounts = Array.isArray(provider.accounts) ? provider.accounts : [];
+        const parts = [w.accountsInline(accounts.length)];
+        const left = providerLeftText(snapshot, provider.id);
+        if (left !== undefined)
+            parts.push(left);
+        if (provider.off === true)
+            parts.push(w.providerOff);
+        children.push({
+            type: 'collapsible',
+            label: `${provider.name} · ${joinDot(parts)}`,
+            // 默认摊开：用户要的就是「一眼看到账号」，收起来要点两下。
+            // 展开态是视图字段（`expanded`），不随 refresh 变化。
+            expanded: true,
+            children: [
+                ...(accounts.length === 0
+                    ? [{ type: 'text', text: w.noAccounts, tone: 'muted' }]
+                    : [{
+                        type: 'list',
+                        items: accounts.slice(0, MAX_AGENT_ACCOUNTS).map(account => accountRow(account, w)),
+                    }]),
+                // 额度窗口与签到在详情页：这里只留一个入口，不重复画。
+                {
+                    type: 'list',
+                    items: [{
+                        title: w.providerEnter,
+                        icon: 'expand',
+                        action: { id: 'openProvider', args: { provider: provider.id } },
+                    }],
+                },
+            ],
+        });
     }
-    children.push({ type: 'list', items: cards });
     const hidden = matched.length - shown.length;
     if (hidden > 0)
         children.push({ type: 'text', text: w.moreProviders(hidden), tone: 'muted' });
@@ -1871,13 +1909,18 @@ function keyForms(providers, w) {
     return forms;
 }
 /**
- * 账号显示：**默认原样显示，不打码**。
+ * 把账号打码：`WPS_1000000001` → `WP•••01`。
  *
- * 这里是本机面板，账号只有自己看；打码反而让「哪个账号」认不出来。
- * 保留这个函数而不是删掉，是为了给以后想加开关的地方一个落点。
+ * **只在用户主动点了「隐藏」时用**（账号行尾那个状态）。默认原样显示 ——
+ * 这是本机面板，账号只有自己看，打码反而认不出是哪个。
+ *
+ * 保留首尾各两个字符：一串全圆点看不出是哪个账号，还不如直接写「已隐藏」。
  */
 function maskAccountId(id) {
-    return String(id);
+    const text = String(id);
+    if (text.length <= 6)
+        return '•'.repeat(Math.max(3, text.length));
+    return `${text.slice(0, 2)}•••${text.slice(-2)}`;
 }
 /**
  * 一个账号一行：标题是账号、副标题是套餐与到期、行尾是登录态。
@@ -1887,14 +1930,21 @@ function maskAccountId(id) {
  * 是 App 原生的信息密度，同屏能读的账号数翻倍。
  */
 function accountRow(account, w) {
-    const title = maskAccountId(isFilled(account.accountId) ? account.accountId : account.key);
+    const real = isFilled(account.accountId) ? account.accountId : account.key;
+    const hidden = account.hidden === true;
+    const title = hidden ? maskAccountId(real) : String(real);
     const row = {
         title,
         tone: signInTone(account.signIn),
         icon: 'account',
     };
     // 行尾只放状态：套餐与到期属于副标题，行尾再放会让 52dp 的行挤成两行。
-    row.trailing = signInText(account.signIn, w);
+    // 隐藏的账号行尾写「显示」，正常账号写登录态 —— 一行只有一个行尾。
+    row.trailing = hidden ? w.accountShow : signInText(account.signIn, w);
+    // 整行可点 = 切换隐藏。App 的一行只能挂一个动作（`DshUiListItem` 只有
+    // title/subtitle/trailing/icon/tone/action 六个字段），所以「隐藏 / 显示」
+    // 就是这一行的点击行为，不另开按钮位。
+    row.action = { id: 'toggleAccountHidden', args: { key: account.key } };
     // ⚠ 不再拼 `account.key`：它是 **provider 名**，而这行已经在某个 provider
     // 的折叠区里，再写一次就是同一个名字一屏出现三次。
     const subtitle = joinDot([
@@ -1998,7 +2048,10 @@ function untilText(until, now) {
  * 屏出现两次（小节标题一次、这里一次），这也是旧版最刺眼的一处重复。
  */
 function quotaAccountRow(item, w, providerLabel) {
-    const head = maskAccountId(isFilled(item.user) ? item.user : item.accountKey);
+    // 额度页的账号**不打码**：这一屏就是用来认「哪个账号还有多少」的，
+    // 打码之后全变成「WP•••01」，几个账号分不出来。打码只服务「主动隐藏」
+    // （`accountRow` 里那个），额度页没有这个开关。
+    const head = isFilled(item.user) ? item.user : item.accountKey;
     const row = { title: head, icon: 'account' };
     // 套餐名常常就是平台名（`plan: 'WPS 灵犀'`），而平台名已经是这节的标题；
     // 再写一次就是同一个名字一屏出现两次。
@@ -2051,9 +2104,11 @@ function checkinNodes(provider, snapshot, w) {
             items: accounts.map((account) => {
                 const r = account.checkin;
                 const state = checkinStateText(r, today, w);
+                const real = account.accountId ?? account.key;
                 return {
-                    // 账号名与上面那行 list 一致（`accountId` 已是明文）
-                    title: account.accountId ?? account.key,
+                    // 与上面那行账号列表同一套写法：隐藏了就一起打码，
+                    // 否则同一个账号在一屏里既有 `wp•••59` 又有 `wps-1926…`。
+                    title: account.hidden === true ? maskAccountId(real) : real,
                     subtitle: state.text,
                     ...(state.tone === undefined ? {} : { tone: state.tone }),
                     icon: 'retry',

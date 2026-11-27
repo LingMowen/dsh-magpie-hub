@@ -1067,6 +1067,35 @@ export function apply(ctx) {
                             id: PANEL_ID,
                         }];
                 },
+                /**
+                 * 隐藏 / 显示一个账号（账号行整行可点，App 一行只能挂一个动作）。
+                 *
+                 * 与桌面 magpie 的 `hideAccounts` 同一语义：**只是面板里不写真实名字**，
+                 * 凭据不动、模型照常可用。隐藏的账号仍然出现在列表里（名字打码、
+                 * 行尾写「显示」），随时点得回来 —— 早先 `buildSnapshot` 直接
+                 * `continue` 跳过隐藏账号，手机上隐藏之后就再也找不到了。
+                 */
+                toggleAccountHidden: async (_scope, event) => {
+                    const key = event?.value?.key;
+                    if (typeof key !== 'string' || key === '')
+                        return [];
+                    const hidden = await policy.isAccountHidden(key);
+                    await policy.setAccountHidden(key, !hidden);
+                    // 快照要重算（`hidden` 在 buildSnapshot 里读 state），视图要重建
+                    // （打码与行尾「显示」都在 view 里算）。只发 toast 不返回 refresh 的话，
+                    // 用户会看到「已隐藏」而那一行还是原文。
+                    await refresh(true).catch(() => { });
+                    notify();
+                    return [{
+                            type: 'refresh',
+                            id: PANEL_ID,
+                        }, {
+                            type: 'toast',
+                            text: hidden
+                                ? text(event?.locale, '已显示这个账号', 'Account shown')
+                                : text(event?.locale, '已隐藏这个账号', 'Account hidden'),
+                        }];
+                },
                 /** 详情视图的「返回」：清掉焦点，回到平台卡片列表。 */
                 closeProvider: () => {
                     focusedProvider = null;
@@ -1540,8 +1569,11 @@ export function apply(ctx) {
             const keys = await host.accountKeys(id);
             const accounts = [];
             for (const key of keys) {
-                if (state.hiddenAccounts.has(key))
-                    continue;
+                // 隐藏的账号**照样进快照**，只是打上标记。
+                // 早先这里直接 `continue`：手机上隐藏一个账号之后它从列表里
+                // 彻底消失，再也没有入口把它显示回来（要回电脑改 state.json）。
+                // 桌面 magpie 的做法是就地打码、行尾留一个眼睛图标，这里对齐。
+                const isHidden = state.hiddenAccounts.has(key);
                 const stored = await host.ensureFresh(id, key);
                 const alias = state.accountAliases[key];
                 // 签到状态：桌面 UI 的额度卡与设置页都按这三件事画
@@ -1552,6 +1584,7 @@ export function apply(ctx) {
                 const lastCheckin = checkinResults.get(key);
                 accounts.push({
                     key,
+                    ...(isHidden ? { hidden: true } : {}),
                     accountId: stored === undefined ? key : whoOf(stored) || key,
                     ...(typeof alias === 'string' && alias !== '' ? { alias } : {}),
                     signIn: signInOf(stored),

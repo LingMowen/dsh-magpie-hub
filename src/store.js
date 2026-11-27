@@ -15,7 +15,7 @@
  * 让下次启动的解析直接失败（magpie 自己也是这么做的）。
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 export function hostPaths(root) {
     return {
@@ -163,6 +163,18 @@ export class AuthStore {
     paths;
     /** 内存缓存：每次读盘太贵，而 getAuth 在每次请求前都会被调。 */
     cache;
+    /**
+     * 这份缓存对应磁盘上那个文件的 mtime / size（毫秒 + 字节）。
+     *
+     * 桌面 magpie 与我们读的是**同一个文件**（`configRoot()` 优先命中
+     * `~/.config/magpie`）。它在自己的进程里登录、刷新、删账号时直接改这个
+     * JSON —— 我们这边没有写文件，所以 `cache` 会一直停在旧内容上，直到进程
+     * 重启。记下 mtime + size 后，`all()` 能自己发现有别人动过。
+     *
+     * 用 mtime + size 而不是只看 mtime：Windows 上同一毫秒内改写（magpie 的
+     * 刷新很快）会让 mtime 看起来没变，而字节数几乎一定会变。
+     */
+    stamp;
     listeners = new Set();
     constructor(paths) {
         this.paths = paths;
@@ -180,10 +192,46 @@ export class AuthStore {
         }
     }
     async all() {
-        if (this.cache !== undefined)
-            return this.cache;
-        this.cache = await readJson(this.paths.auth, {});
+        if (this.cache !== undefined) {
+            // 缓存还在，但先问一句「磁盘上那个文件还是我读的那一份吗」。
+            // 有人（桌面 magpie）改过就丢掉缓存重读 —— 这是本插件与 magpie
+            // 共用同一个数据根时唯一需要「同步」的地方，不加任何 watcher。
+            if (await this.unchanged())
+                return this.cache;
+            this.cache = undefined;
+        }
+        const read = await readJson(this.paths.auth, {});
+        this.cache = read;
+        this.stamp = await this.fileStamp();
         return this.cache;
+    }
+    /** 磁盘上那个文件的 mtime + size；读不到（不存在/被删）时返回 undefined。 */
+    async fileStamp() {
+        try {
+            const info = await stat(this.paths.auth);
+            return {
+                mtimeMs: info.mtimeMs,
+                size: info.size,
+            };
+        }
+        catch {
+            return undefined;
+        }
+    }
+    /**
+     * 「我上次读完之后，没人动过这个文件」。
+     *
+     * 两种「没记录过」的情况都算**变过**（返回 false），宁可多读一次盘：
+     * - `stamp` 是 undefined（还没读过）；
+     * - 现在读不到文件但缓存里说有（文件被删了 → 该重读成空）。
+     */
+    async unchanged() {
+        if (this.stamp === undefined)
+            return false;
+        const now = await this.fileStamp();
+        if (now === undefined)
+            return false;
+        return now.mtimeMs === this.stamp.mtimeMs && now.size === this.stamp.size;
     }
     async get(key) {
         return (await this.all())[key];
@@ -194,6 +242,8 @@ export class AuthStore {
         all[key] = body;
         this.cache = all;
         await writeJson(this.paths.auth, all);
+        // 自己刚写完：把 stamp 对齐，避免下一次 all() 又白读一遍磁盘。
+        this.stamp = await this.fileStamp();
         this.changed();
     }
     /** 浅合并一条记录（`auth.refresh` 返回值的语义）。 */
@@ -203,6 +253,8 @@ export class AuthStore {
         all[key] = next;
         this.cache = all;
         await writeJson(this.paths.auth, all);
+        // 自己刚写完：把 stamp 对齐，避免下一次 all() 又白读一遍磁盘。
+        this.stamp = await this.fileStamp();
         this.changed();
         return next;
     }
@@ -211,11 +263,14 @@ export class AuthStore {
         delete all[key];
         this.cache = all;
         await writeJson(this.paths.auth, all);
+        // 自己刚写完：把 stamp 对齐，避免下一次 all() 又白读一遍磁盘。
+        this.stamp = await this.fileStamp();
         this.changed();
     }
     /** 测试与「外部改了文件」时用。 */
     invalidate() {
         this.cache = undefined;
+        this.stamp = undefined;
     }
 }
 /** magpie 的 `accountsOf`：provider 自己的 key 在最前，其余 `<id>#<slot>`。 */

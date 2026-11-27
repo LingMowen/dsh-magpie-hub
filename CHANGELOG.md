@@ -2,6 +2,12 @@
 
 本文件记录每个版本的变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 0.2.10 — 2026-11-27
+
+### 修复
+
+- **在 DSH 0.2.0-rc.2 上装不上：市场判「和当前 DSH 不兼容」。** 插件声明的运行时下限写的是 `>=0.2.1-rc.5`，而手机端 App 内置的是 0.2.0-rc.2，于是市场在详情页就挡住安装。实测 0.2.0-rc.2 完全能跑：`MagpieAdapter` 继承 `LlmAdapter` 的 `instanceof` 为真、`providerInfo` 正常、六个钩子里只差 0.2.1 才加的 `imageRequestTarget`（有默认实现，是可选覆写，缺了也不会失败），而插件运行时只用到 `LlmAdapter` 与 `LlmError` 两个导出，两版都在。下限因此放宽到 `>=0.2.0-rc.2`。
+
 ## 0.2.9 — 2026-11-27
 
 ### 变更
